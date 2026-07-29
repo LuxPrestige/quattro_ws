@@ -6,6 +6,9 @@ log/
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .coverage
@@ -25,3 +28,13 @@ src/quattro_bringup/config/motor_ids.yaml
 # Runtime logs and bags
 *.log
 rosbag2_*/
+
+# Environment and secrets
+.env
+*.env
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
