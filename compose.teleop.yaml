@@ -1,4 +1,6 @@
 services:
   dev:
+    group_add:
+      - "${INPUT_GID:-995}"
     devices:
-      - /dev/input/js0:/dev/input/js0
+      - /dev/input:/dev/input

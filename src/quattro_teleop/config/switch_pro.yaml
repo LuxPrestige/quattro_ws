@@ -1,0 +1,25 @@
+game_controller_node:
+  ros__parameters:
+    device_id: 0
+    deadzone: 0.05
+    autorepeat_rate: 20.0
+    sticky_buttons: false
+
+quattro_teleop:
+  ros__parameters:
+    # SDL game-controller mapping: left X/Y and right X axes.
+    axis_linear_x: 1
+    axis_linear_y: 0
+    axis_angular_z: 2
+    scale_linear_x: 1.0
+    scale_linear_y: 1.0
+    scale_angular_z: 1.0
+    invert_linear_x: false
+    invert_linear_y: true
+    invert_angular_z: true
+    deadzone: 0.10
+    # SDL mapping: left shoulder deadman, Home/Guide software E-stop.
+    enable_button: 9
+    estop_button: 5
+    joy_timeout_sec: 0.5
+    publish_rate_hz: 20.0
