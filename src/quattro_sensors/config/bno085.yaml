@@ -1,0 +1,9 @@
+bno085:
+  ros__parameters:
+    frame_id: imu_link
+    i2c_address: 74
+    publish_rate_hz: 100.0
+    reconnect_interval_sec: 2.0
+    orientation_stddev: 0.05
+    angular_velocity_stddev: 0.02
+    linear_acceleration_stddev: 0.20

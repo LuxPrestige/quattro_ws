@@ -46,6 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ros2-controllers \
     && rm -rf /var/lib/apt/lists/*
 
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    Adafruit-Blinka \
+    Adafruit-Extended-Bus \
+    adafruit-circuitpython-bno08x
+
 RUN set -eux; \
     EXISTING_GROUP="$(getent group "${USER_GID}" | cut -d: -f1 || true)"; \
     if [ -z "${EXISTING_GROUP}" ]; then \
@@ -82,8 +87,11 @@ RUN mkdir -p /ws \
     && chown -R ${USERNAME}:${USERNAME} /ws
 
 COPY docker/entrypoint.sh /usr/local/bin/lgh_ws_entrypoint.sh
+COPY docker/ros_setup.bash /usr/local/bin/lgh_ws_ros_setup.bash
 
-RUN chmod +x /usr/local/bin/lgh_ws_entrypoint.sh
+RUN chmod +x /usr/local/bin/lgh_ws_entrypoint.sh \
+    && printf '\nsource /usr/local/bin/lgh_ws_ros_setup.bash\n' \
+        >> "/home/${USERNAME}/.bashrc"
 
 USER ${USERNAME}
 WORKDIR /ws
