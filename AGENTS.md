@@ -58,27 +58,26 @@ lgh_ws/
     ├── quattro_bringup/
     ├── quattro_hardware/
     ├── quattro_sensors/
-    └── quattro_teleop/
+    ├── quattro_teleop/
+    └── gim6010_driver/
 ```
 
 ### `quattro`
 
-Python 기반 로봇 상위 제어 패키지.
+Python 기반 상위 제어 패키지.
 
 담당 기능:
 
 * Forward Kinematics
 * Inverse Kinematics
+* 자세 제어
 * 보행 궤적 생성
 * gait generator
-* 자세 제어
 * balance control
 * 로봇 상위 상태 머신
-* 목표 자세 및 목표 관절 상태 생성
+* 목표 joint position / velocity / effort 생성
 
-이 패키지는 로봇의 제어 알고리즘을 담당하며, CAN 프레임 생성이나 SocketCAN 처리와 같은 저수준 하드웨어 통신 코드는 포함하지 않는다.
-
-하드웨어에 직접 의존하지 않도록 구성하여 시뮬레이션 환경과 실제 로봇 환경에서 동일한 상위 제어 코드를 최대한 재사용할 수 있도록 한다.
+CAN 통신, 모터 프로토콜, SocketCAN 관련 코드는 이 패키지에 넣지 않는다.
 
 ---
 
@@ -91,133 +90,115 @@ Python 기반 로봇 상위 제어 패키지.
 * URDF
 * Xacro
 * STL mesh
-* joint/link 정의
 * TF 구조
+* joint/link 정의
 * collision 및 inertial 정보
 * RViz 설정
 * `ros2_control` robot description
 
-모터 CAN ID, joint direction, encoder offset 등 실제 하드웨어와 연결하기 위한 파라미터가 필요한 경우 `ros2_control`의 `<ros2_control>` 설정을 통해 정의할 수 있다.
+필요한 경우 `<ros2_control>` 설정을 통해 다음 하드웨어 파라미터를 정의할 수 있다.
 
-상위 제어 알고리즘이나 CAN 통신 코드는 포함하지 않는다.
+```text
+CAN ID
+joint direction
+joint offset
+joint limit
+```
 
 ---
 
 ### `quattro_bringup`
 
-Quattro 전체 시스템의 실행과 구성 조합을 담당하는 패키지.
+전체 시스템 실행 담당.
 
 담당 기능:
 
 * launch 파일
 * 시스템 전체 파라미터
-* 실제 로봇 실행 구성
-* 시뮬레이션 실행 구성
-* `robot_state_publisher` 실행
-* `controller_manager` 실행
+* 실제 로봇 실행 조합
+* `robot_state_publisher`
+* `controller_manager`
 * ros2_control controller 로딩
 * 센서 노드 실행
-* teleop 노드 실행
+* teleop 실행
 * 상위 제어 노드 실행
 
-개별 하드웨어 드라이버나 제어 알고리즘 구현은 이 패키지에 넣지 않는다.
+드라이버 구현이나 제어 알고리즘은 포함하지 않는다.
 
 ---
 
-### `quattro_hardware`
+### `gim6010_driver`
 
-C++ 기반 실제 로봇 하드웨어 인터페이스 패키지.
+C++ 기반 GIM6010-8 전용 저수준 모터 드라이버 패키지.
 
-상위 ROS 2 제어 계층과 실제 GIM6010-8 액추에이터 사이의 연결을 담당한다.
+이 패키지는 Quattro 로봇 구조를 알지 않으며, GIM6010-8 액추에이터와 CAN 통신하는 기능만 담당한다.
 
-주요 구성은 다음과 같이 계층적으로 분리한다.
+전체 구조:
 
 ```text
-ros2_control
-      ↓
-Quattro HardwareInterface
-      ↓
+GIM6010 API
+    ↓
 Motor abstraction
-      ↓
-GIM6010-8 protocol
-      ↓
+    ↓
+GIM6010 protocol
+    ↓
+MIT Control protocol
+    ↓
 SocketCAN
-      ↓
+    ↓
 Linux can0
-      ↓
+    ↓
 GIM6010-8
 ```
 
 담당 기능:
 
 * Linux SocketCAN 인터페이스
+* CAN socket 생성 및 종료
 * CAN frame 송수신
-* GIM6010-8 CAN 프로토콜 처리
-* MIT Control 패킷 인코딩/디코딩
-* 모터 Enable / Disable
-* 모터 Zero 설정
-* position / velocity / torque 명령 전송
-* 모터 position / velocity / torque 피드백 수신
-* 모터 CAN ID 관리
-* joint와 motor 간 매핑
-* joint direction 변환
-* encoder 및 joint zero offset 적용
-* `ros2_control HardwareInterface`
-* `read()` / `write()` 구현
-* 통신 timeout 감지
-* command limit
-* torque limit
-* velocity limit
-* position limit
-* watchdog
-* 하드웨어 fault 처리
-* 안전 정지 로직
+* CAN ID 처리
+* GIM6010-8 프로토콜 구현
+* MIT Control 패킷 인코딩
+* MIT Control 피드백 디코딩
+* float ↔ integer quantization
+* motor enable
+* motor disable
+* motor zero 설정
+* position command
+* velocity command
+* Kp command
+* Kd command
+* torque command
+* position feedback
+* velocity feedback
+* torque feedback
+* 다중 모터 CAN feedback routing
+* 통신 timeout 검출
+* CAN 오류 검출
 
-내부 구현은 가능하면 다음 계층으로 분리한다.
-
-```text
-quattro_hardware/
-
-├── CAN communication
-│   └── SocketCAN
-│
-├── motor protocol
-│   ├── GIM6010 protocol
-│   └── MIT protocol
-│
-├── motor abstraction
-│   └── GIM6010 motor class
-│
-└── ros2_control
-    └── QuattroSystem HardwareInterface
-```
-
-예상 디렉터리 구조:
+권장 내부 구조:
 
 ```text
-quattro_hardware/
+gim6010_driver/
 ├── include/
-│   └── quattro_hardware/
+│   └── gim6010_driver/
 │       ├── can_socket.hpp
 │       ├── mit_protocol.hpp
 │       ├── gim6010_motor.hpp
-│       ├── motor_manager.hpp
-│       └── quattro_system.hpp
+│       └── motor_manager.hpp
 ├── src/
 │   ├── can_socket.cpp
 │   ├── mit_protocol.cpp
 │   ├── gim6010_motor.cpp
-│   ├── motor_manager.cpp
-│   └── quattro_system.cpp
-├── config/
-├── quattro_hardware.xml
+│   └── motor_manager.cpp
+├── test/
 ├── CMakeLists.txt
 └── package.xml
 ```
 
-각 계층의 책임은 명확하게 분리한다.
+#### `CanSocket`
 
-#### SocketCAN 계층
+Linux SocketCAN과 직접 통신한다.
 
 다음 정보만 다룬다.
 
@@ -227,11 +208,13 @@ DLC
 CAN DATA
 ```
 
-position, velocity, torque와 같은 모터 제어 개념을 직접 처리하지 않는다.
+position, velocity, torque와 같은 모터 제어 의미는 알지 않는다.
 
-#### GIM6010 프로토콜 계층
+#### `MitProtocol`
 
-다음 기능을 담당한다.
+MIT Control packet의 직렬화 및 역직렬화를 담당한다.
+
+처리 대상:
 
 ```text
 position
@@ -241,49 +224,159 @@ Kd
 torque
 ```
 
-값을 실제 CAN payload로 변환하거나 수신 CAN payload를 물리량으로 변환한다.
+예상 인터페이스:
 
-#### Motor 계층
+```cpp
+MitCommand
+encodeCommand(...)
 
-GIM6010-8 모터 하나를 추상화한다.
+MitFeedback
+decodeFeedback(...)
+```
 
-예:
+#### `Gim6010Motor`
+
+GIM6010-8 모터 한 개를 추상화한다.
+
+예상 인터페이스:
 
 ```text
 enable()
 disable()
-set_zero()
-send_command()
+setZero()
+sendCommand()
 position()
 velocity()
 torque()
 ```
 
-#### Motor Manager 계층
+#### `MotorManager`
 
-Quattro에 장착된 여러 GIM6010-8 모터를 관리한다.
+하나의 CAN bus에 연결된 여러 GIM6010-8을 관리한다.
 
 담당 기능:
 
 * CAN ID별 모터 관리
-* CAN feedback routing
-* 다중 모터 command 전송
+* feedback frame routing
+* command 전송
 * 모터 상태 관리
 
-#### ros2_control 계층
+`gim6010_driver`에는 다음 내용을 넣지 않는다.
 
-Quattro의 ROS joint와 실제 GIM6010-8 모터를 연결한다.
+```text
+FL_HIP
+FR_HIP
+Quattro joint 이름
+URDF
+IK
+FK
+gait generator
+balance control
+ros2_control SystemInterface
+```
+
+---
+
+### `quattro_hardware`
+
+C++ 기반 Quattro 전용 하드웨어 계층.
+
+ROS 2의 joint 개념과 실제 GIM6010-8 모터를 연결한다.
+
+`gim6010_driver`에 의존하며, 직접 MIT packet이나 raw CAN frame을 생성하지 않는다.
+
+전체 구조:
+
+```text
+ros2_control
+      ↓
+QuattroSystem
+      ↓
+quattro_hardware
+      ↓
+gim6010_driver
+      ↓
+SocketCAN
+      ↓
+GIM6010-8
+```
 
 담당 기능:
 
 * `hardware_interface::SystemInterface` 구현
-* ROS joint state ↔ motor feedback 변환
-* ROS joint command ↔ motor command 변환
-* joint direction 적용
-* joint offset 적용
-* joint limit 적용
+* `read()` 구현
+* `write()` 구현
+* ROS joint와 motor CAN ID 매핑
+* joint direction 변환
+* encoder/joint zero offset 적용
+* joint position limit
+* joint velocity limit
+* joint effort/torque limit
+* ROS command → motor command 변환
+* motor feedback → ROS joint state 변환
+* ros2_control lifecycle 처리
+* hardware watchdog
+* 통신 timeout 발생 시 안전 동작
+* hardware fault 처리
+* 안전 정지
 
-상위 보행 알고리즘, Forward Kinematics, Inverse Kinematics, gait generation, balance control은 이 패키지에 넣지 않는다.
+권장 구조:
+
+```text
+quattro_hardware/
+├── include/
+│   └── quattro_hardware/
+│       └── quattro_system.hpp
+├── src/
+│   └── quattro_system.cpp
+├── config/
+├── quattro_hardware.xml
+├── CMakeLists.txt
+└── package.xml
+```
+
+`quattro_hardware`는 다음 정보를 알고 있다.
+
+```text
+fl_hip_joint → CAN ID 1
+fl_thigh_joint → CAN ID 2
+fl_calf_joint → CAN ID 3
+...
+```
+
+예를 들어 모터 피드백은 다음 경로로 전달된다.
+
+```text
+GIM6010-8
+    ↓
+CAN feedback
+    ↓
+gim6010_driver
+    ↓
+position / velocity / torque
+    ↓
+quattro_hardware::read()
+    ↓
+ros2_control state interface
+```
+
+명령은 반대 방향이다.
+
+```text
+ros2_control command
+    ↓
+quattro_hardware::write()
+    ↓
+joint direction / offset 적용
+    ↓
+gim6010_driver
+    ↓
+MIT CAN command
+    ↓
+GIM6010-8
+```
+
+상위 보행 알고리즘, FK, IK, gait generation, balance control은 이 패키지에 넣지 않는다.
 
 ---
 
@@ -307,53 +400,48 @@ sensor_msgs/msg/Imu
 /imu/data
 ```
 
-가능하면 센서 드라이버는 상위 제어 알고리즘과 독립적으로 동작하도록 구성한다.
-
-상위 자세 추정이나 balance control 알고리즘은 `quattro` 패키지에서 처리한다.
+자세 보정이나 balance control은 이 패키지가 아니라 `quattro`에서 수행한다.
 
 ---
 
 ### `quattro_teleop`
 
-사용자 입력을 ROS 2 command로 변환하는 패키지.
+사용자 입력 담당.
 
 담당 기능:
 
 * Nintendo Switch Pro Controller 입력
 * `sensor_msgs/msg/Joy` 처리
-* joystick axis/button mapping
 * `/cmd_vel` 생성
-* 제어 모드 전환
+* 모드 전환
 * 보행 활성화/비활성화
 * 소프트웨어 E-stop 입력
 
-하드웨어 모터를 직접 제어하지 않는다.
-
-권장 데이터 흐름은 다음과 같다.
-
-```text
-Nintendo Switch Pro Controller
-              ↓
-            Joy
-              ↓
-       quattro_teleop
-              ↓
-          /cmd_vel
-              ↓
-           quattro
-              ↓
-      ros2_control controller
-              ↓
-      quattro_hardware
-              ↓
-          GIM6010-8
-```
+모터나 CAN을 직접 제어하지 않는다.
 
 ---
 
-## 패키지 간 책임 원칙
+## 패키지 간 의존 관계
 
-각 패키지는 다음 기준으로 책임을 분리한다.
+권장 의존 관계는 다음과 같다.
+
+```text
+quattro
+   ↓
+ROS 2 command interface
+   ↓
+ros2_control controller
+   ↓
+quattro_hardware
+   ↓
+gim6010_driver
+   ↓
+SocketCAN
+   ↓
+GIM6010-8
+```
+
+각 패키지의 책임은 다음 기준으로 구분한다.
 
 ```text
 로봇을 어떻게 움직일 것인가?
@@ -361,7 +449,7 @@ Nintendo Switch Pro Controller
       quattro
 
 
-로봇의 기구 구조는 무엇인가?
+로봇의 구조는 무엇인가?
         ↓
 quattro_description
 
@@ -371,9 +459,14 @@ quattro_description
 quattro_bringup
 
 
-실제 모터와 어떻게 통신할 것인가?
+Quattro joint와 실제 모터를 어떻게 연결할 것인가?
         ↓
 quattro_hardware
+
+
+GIM6010-8과 어떻게 CAN 통신할 것인가?
+        ↓
+gim6010_driver
 
 
 센서 데이터를 어떻게 가져올 것인가?
@@ -389,16 +482,15 @@ quattro_teleop
 특히 다음 의존 방향을 유지한다.
 
 ```text
-quattro
-   ↓
-ros2_control / ROS interfaces
-   ↓
 quattro_hardware
-   ↓
-GIM6010-8 CAN
+        ↓
+gim6010_driver
 ```
 
-상위 제어 패키지인 `quattro`가 `SocketCAN`, CAN ID, CAN frame 구조 또는 GIM6010-8 프로토콜에 직접 의존하지 않도록 한다.
+반대로 `gim6010_driver`가 `quattro_hardware`에 의존해서는 안 된다.
+
+이렇게 구성하면 GIM6010 드라이버를 향후 다른 로봇에서도 재사용할 수 있다.
+
 
 
 ---

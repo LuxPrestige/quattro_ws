@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<library path="quattro_hardware">
+  <class name="quattro_hardware/QuattroSystem"
+         type="quattro_hardware::QuattroSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>ros2_control SystemInterface for Quattro GIM6010-8 actuators.</description>
+  </class>
+</library>

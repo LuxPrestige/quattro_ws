@@ -13,6 +13,21 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(gim6010_driver REQUIRED)
+
+add_library(${PROJECT_NAME} SHARED src/quattro_system.cpp)
+target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+target_include_directories(${PROJECT_NAME} PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(${PROJECT_NAME}
+  rclcpp rclcpp_lifecycle hardware_interface pluginlib gim6010_driver)
+pluginlib_export_plugin_description_file(hardware_interface quattro_hardware.xml)
+
+install(DIRECTORY include/ DESTINATION include)
+install(FILES quattro_hardware.xml DESTINATION share/${PROJECT_NAME})
+install(TARGETS ${PROJECT_NAME} EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -26,4 +41,6 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(hardware_interface pluginlib gim6010_driver)
 ament_package()
