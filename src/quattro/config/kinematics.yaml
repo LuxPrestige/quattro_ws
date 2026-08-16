@@ -1,0 +1,38 @@
+pose_controller:
+  ros__parameters:
+    hip_offset_y: 0.0905
+    upper_leg_length: 0.210
+    lower_leg_length: 0.210
+    hip_spacing_x: 0.405
+    hip_spacing_y: 0.120
+    foot_spacing_x: 0.405
+    foot_spacing_y: 0.301
+    nominal_height: 0.300
+    center_of_mass_offset_x: -0.040
+    trajectory_duration: 0.25
+
+gait_controller:
+  ros__parameters:
+    hip_offset_y: 0.0905
+    upper_leg_length: 0.210
+    lower_leg_length: 0.210
+    hip_spacing_x: 0.405
+    hip_spacing_y: 0.120
+    foot_spacing_x: 0.405
+    foot_spacing_y: 0.301
+    nominal_height: 0.300
+    center_of_mass_offset_x: -0.040
+    swing_duration: 0.25
+    stance_duration: 0.30
+    clearance_height: 0.040
+    penetration_depth: 0.0
+    max_linear_speed: 0.30
+    max_yaw_rate: 1.0
+    control_frequency: 100.0
+    command_timeout: 0.50
+    velocity_ramp_rate: 0.5
+    pose_pid:
+      kp: 1.5
+      ki: 0.1
+      kd: 0.05
+      integral_limit: 0.5

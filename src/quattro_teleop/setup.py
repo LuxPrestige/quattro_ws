@@ -28,6 +28,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'keyboard_teleop = quattro_teleop.keyboard_teleop:main',
             'teleop_node = quattro_teleop.teleop_node:main',
         ],
     },

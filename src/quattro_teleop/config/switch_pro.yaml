@@ -7,19 +7,30 @@ game_controller_node:
 
 quattro_teleop:
   ros__parameters:
-    # SDL game-controller mapping: left X/Y and right X axes.
+    # Reference Switch Pro mapping.
     axis_linear_x: 1
     axis_linear_y: 0
-    axis_angular_z: 2
-    scale_linear_x: 1.0
-    scale_linear_y: 1.0
-    scale_angular_z: 1.0
-    invert_linear_x: false
-    invert_linear_y: true
-    invert_angular_z: true
+    axis_height: 3
+    axis_yaw: 2
+    axis_dpad_vertical: 7
+    axis_dpad_horizontal: 6
+    button_switch_mode: 0
+    button_estop: 1
+    button_imu_auto: 3
+    button_left_bumper: 4
+    button_right_bumper: 5
+
+    # Standard ROS interface values use SI units.
+    scale_linear_x: 0.30
+    scale_linear_y: 0.30
+    scale_yaw: 1.0
+    scale_height: 0.15
+    scale_roll_pitch: 0.785
     deadzone: 0.10
-    # SDL mapping: left shoulder deadman, Home/Guide software E-stop.
-    enable_button: 9
-    estop_button: 5
     joy_timeout_sec: 0.5
     publish_rate_hz: 20.0
+
+    clearance_height: 0.040
+    penetration_depth: 0.008
+    swing_duration: 0.25
+    adjustment_step: 0.001

@@ -63,19 +63,24 @@ lgh_ws/
 
 ### `quattro`
 
-Python 기반 상위 제어 패키지.
+Python 기반 로봇 상위 제어 패키지.
 
 담당 기능:
 
-- Forward Kinematics
-- Inverse Kinematics
-- 자세 제어
-- 보행 궤적 생성
-- gait generator
-- balance control
-- 로봇 상위 상태 머신
+* Forward Kinematics
+* Inverse Kinematics
+* 보행 궤적 생성
+* gait generator
+* 자세 제어
+* balance control
+* 로봇 상위 상태 머신
+* 목표 자세 및 목표 관절 상태 생성
 
-CAN 통신이나 모터 드라이버 코드는 이 패키지에 넣지 않는다.
+이 패키지는 로봇의 제어 알고리즘을 담당하며, CAN 프레임 생성이나 SocketCAN 처리와 같은 저수준 하드웨어 통신 코드는 포함하지 않는다.
+
+하드웨어에 직접 의존하지 않도록 구성하여 시뮬레이션 환경과 실제 로봇 환경에서 동일한 상위 제어 코드를 최대한 재사용할 수 있도록 한다.
+
+---
 
 ### `quattro_description`
 
@@ -83,37 +88,204 @@ CAN 통신이나 모터 드라이버 코드는 이 패키지에 넣지 않는다
 
 담당 기능:
 
-- URDF
-- Xacro
-- STL mesh
-- TF 구조
-- RViz 설정
-- 추후 `ros2_control` robot description
+* URDF
+* Xacro
+* STL mesh
+* joint/link 정의
+* TF 구조
+* collision 및 inertial 정보
+* RViz 설정
+* `ros2_control` robot description
+
+모터 CAN ID, joint direction, encoder offset 등 실제 하드웨어와 연결하기 위한 파라미터가 필요한 경우 `ros2_control`의 `<ros2_control>` 설정을 통해 정의할 수 있다.
+
+상위 제어 알고리즘이나 CAN 통신 코드는 포함하지 않는다.
+
+---
 
 ### `quattro_bringup`
 
-전체 시스템 실행 담당.
+Quattro 전체 시스템의 실행과 구성 조합을 담당하는 패키지.
 
 담당 기능:
 
-- launch 파일
-- 시스템 전체 파라미터
-- 실제 로봇 실행 조합
+* launch 파일
+* 시스템 전체 파라미터
+* 실제 로봇 실행 구성
+* 시뮬레이션 실행 구성
+* `robot_state_publisher` 실행
+* `controller_manager` 실행
+* ros2_control controller 로딩
+* 센서 노드 실행
+* teleop 노드 실행
+* 상위 제어 노드 실행
+
+개별 하드웨어 드라이버나 제어 알고리즘 구현은 이 패키지에 넣지 않는다.
+
+---
 
 ### `quattro_hardware`
 
-C++ 기반 하드웨어 계층.
+C++ 기반 실제 로봇 하드웨어 인터페이스 패키지.
+
+상위 ROS 2 제어 계층과 실제 GIM6010-8 액추에이터 사이의 연결을 담당한다.
+
+주요 구성은 다음과 같이 계층적으로 분리한다.
+
+```text
+ros2_control
+      ↓
+Quattro HardwareInterface
+      ↓
+Motor abstraction
+      ↓
+GIM6010-8 protocol
+      ↓
+SocketCAN
+      ↓
+Linux can0
+      ↓
+GIM6010-8
+```
 
 담당 기능:
 
-- SocketCAN
-- GIM6010-8 CAN Simple 프로토콜
-- MIT Control 패킷 인코딩/디코딩
-- 모터 피드백
-- `ros2_control HardwareInterface`
-- 하드웨어 안전 로직
+* Linux SocketCAN 인터페이스
+* CAN frame 송수신
+* GIM6010-8 CAN 프로토콜 처리
+* MIT Control 패킷 인코딩/디코딩
+* 모터 Enable / Disable
+* 모터 Zero 설정
+* position / velocity / torque 명령 전송
+* 모터 position / velocity / torque 피드백 수신
+* 모터 CAN ID 관리
+* joint와 motor 간 매핑
+* joint direction 변환
+* encoder 및 joint zero offset 적용
+* `ros2_control HardwareInterface`
+* `read()` / `write()` 구현
+* 통신 timeout 감지
+* command limit
+* torque limit
+* velocity limit
+* position limit
+* watchdog
+* 하드웨어 fault 처리
+* 안전 정지 로직
 
-상위 보행 알고리즘과 IK를 이 패키지에 넣지 않는다.
+내부 구현은 가능하면 다음 계층으로 분리한다.
+
+```text
+quattro_hardware/
+
+├── CAN communication
+│   └── SocketCAN
+│
+├── motor protocol
+│   ├── GIM6010 protocol
+│   └── MIT protocol
+│
+├── motor abstraction
+│   └── GIM6010 motor class
+│
+└── ros2_control
+    └── QuattroSystem HardwareInterface
+```
+
+예상 디렉터리 구조:
+
+```text
+quattro_hardware/
+├── include/
+│   └── quattro_hardware/
+│       ├── can_socket.hpp
+│       ├── mit_protocol.hpp
+│       ├── gim6010_motor.hpp
+│       ├── motor_manager.hpp
+│       └── quattro_system.hpp
+├── src/
+│   ├── can_socket.cpp
+│   ├── mit_protocol.cpp
+│   ├── gim6010_motor.cpp
+│   ├── motor_manager.cpp
+│   └── quattro_system.cpp
+├── config/
+├── quattro_hardware.xml
+├── CMakeLists.txt
+└── package.xml
+```
+
+각 계층의 책임은 명확하게 분리한다.
+
+#### SocketCAN 계층
+
+다음 정보만 다룬다.
+
+```text
+CAN ID
+DLC
+CAN DATA
+```
+
+position, velocity, torque와 같은 모터 제어 개념을 직접 처리하지 않는다.
+
+#### GIM6010 프로토콜 계층
+
+다음 기능을 담당한다.
+
+```text
+position
+velocity
+Kp
+Kd
+torque
+```
+
+값을 실제 CAN payload로 변환하거나 수신 CAN payload를 물리량으로 변환한다.
+
+#### Motor 계층
+
+GIM6010-8 모터 하나를 추상화한다.
+
+예:
+
+```text
+enable()
+disable()
+set_zero()
+send_command()
+position()
+velocity()
+torque()
+```
+
+#### Motor Manager 계층
+
+Quattro에 장착된 여러 GIM6010-8 모터를 관리한다.
+
+담당 기능:
+
+* CAN ID별 모터 관리
+* CAN feedback routing
+* 다중 모터 command 전송
+* 모터 상태 관리
+
+#### ros2_control 계층
+
+Quattro의 ROS joint와 실제 GIM6010-8 모터를 연결한다.
+
+담당 기능:
+
+* `hardware_interface::SystemInterface` 구현
+* ROS joint state ↔ motor feedback 변환
+* ROS joint command ↔ motor command 변환
+* joint direction 적용
+* joint offset 적용
+* joint limit 적용
+
+상위 보행 알고리즘, Forward Kinematics, Inverse Kinematics, gait generation, balance control은 이 패키지에 넣지 않는다.
+
+---
 
 ### `quattro_sensors`
 
@@ -121,9 +293,9 @@ C++ 기반 하드웨어 계층.
 
 현재 계획:
 
-- BNO085 IMU
+* BNO085 IMU
 
-IMU 출력은 다음 표준 메시지를 사용한다.
+IMU 출력은 ROS 2 표준 메시지를 사용한다.
 
 ```text
 sensor_msgs/msg/Imu
@@ -135,17 +307,99 @@ sensor_msgs/msg/Imu
 /imu/data
 ```
 
+가능하면 센서 드라이버는 상위 제어 알고리즘과 독립적으로 동작하도록 구성한다.
+
+상위 자세 추정이나 balance control 알고리즘은 `quattro` 패키지에서 처리한다.
+
+---
+
 ### `quattro_teleop`
 
-사용자 입력 담당.
+사용자 입력을 ROS 2 command로 변환하는 패키지.
 
 담당 기능:
 
-- Nintendo Switch Pro Controller 입력
-- `sensor_msgs/msg/Joy` 처리
-- `/cmd_vel` 생성
-- 모드 전환
-- 소프트웨어 E-stop 입력
+* Nintendo Switch Pro Controller 입력
+* `sensor_msgs/msg/Joy` 처리
+* joystick axis/button mapping
+* `/cmd_vel` 생성
+* 제어 모드 전환
+* 보행 활성화/비활성화
+* 소프트웨어 E-stop 입력
+
+하드웨어 모터를 직접 제어하지 않는다.
+
+권장 데이터 흐름은 다음과 같다.
+
+```text
+Nintendo Switch Pro Controller
+              ↓
+            Joy
+              ↓
+       quattro_teleop
+              ↓
+          /cmd_vel
+              ↓
+           quattro
+              ↓
+      ros2_control controller
+              ↓
+      quattro_hardware
+              ↓
+          GIM6010-8
+```
+
+---
+
+## 패키지 간 책임 원칙
+
+각 패키지는 다음 기준으로 책임을 분리한다.
+
+```text
+로봇을 어떻게 움직일 것인가?
+        ↓
+      quattro
+
+
+로봇의 기구 구조는 무엇인가?
+        ↓
+quattro_description
+
+
+시스템을 어떻게 실행할 것인가?
+        ↓
+quattro_bringup
+
+
+실제 모터와 어떻게 통신할 것인가?
+        ↓
+quattro_hardware
+
+
+센서 데이터를 어떻게 가져올 것인가?
+        ↓
+quattro_sensors
+
+
+사용자 입력을 어떻게 받을 것인가?
+        ↓
+quattro_teleop
+```
+
+특히 다음 의존 방향을 유지한다.
+
+```text
+quattro
+   ↓
+ros2_control / ROS interfaces
+   ↓
+quattro_hardware
+   ↓
+GIM6010-8 CAN
+```
+
+상위 제어 패키지인 `quattro`가 `SocketCAN`, CAN ID, CAN frame 구조 또는 GIM6010-8 프로토콜에 직접 의존하지 않도록 한다.
+
 
 ---
 
@@ -204,8 +458,8 @@ base_footprint
     ├── imu_link
     ├── front_left_...
     ├── front_right_...
-    ├── rear_left_...
-    └── rear_right_...
+    ├── back_left_...
+    └── back_right_...
 ```
 
 실제 localization 또는 state estimation이 구현되기 전에는 임의의 `map` 또는 `odom` TF를 만들지 않는다.
@@ -221,13 +475,10 @@ ROS 내부 이름은 다음 규칙으로 통일한다.
 ```text
 front_left
 front_right
-rear_left
-rear_right
+back_left
+back_right
 ```
 
-새 코드에서는 `back_*`과 `rear_*`를 섞지 않는다.
-
-현재 CAD에서 내보낸 STL 파일 중 `back_left_hip.stl`, `back_right_hip.stl`은 파일 이름을 그대로 유지할 수 있지만, ROS link/joint 이름은 앞으로 `rear_*`를 사용한다.
 
 ### Link 이름
 

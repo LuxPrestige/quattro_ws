@@ -20,4 +20,9 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(
+  PROGRAMS scripts/trajectory_to_joint_state.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

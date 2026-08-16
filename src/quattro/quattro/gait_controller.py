@@ -1,0 +1,254 @@
+"""ROS node converting velocity commands into joint trajectories."""
+
+import math
+
+from geometry_msgs.msg import PoseStamped, Twist
+from quattro.gait import GaitGenerator, GaitParameters
+from quattro.kinematics import (
+    QuadrupedKinematics,
+    RobotGeometry,
+    UnreachableTargetError,
+)
+from quattro.pose_controller import quaternion_to_rpy
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool, Float64
+from std_srvs.srv import SetBool
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+
+class GaitController(Node):
+    """Run a safe, timeout-aware trot trajectory generator."""
+
+    def __init__(self) -> None:
+        super().__init__('gait_controller')
+        geometry_defaults = RobotGeometry()
+        geometry_values = {
+            name: float(self.declare_parameter(
+                name, getattr(geometry_defaults, name)).value)
+            for name in geometry_defaults.__dataclass_fields__
+        }
+        gait_defaults = GaitParameters()
+        gait_values = {
+            name: float(self.declare_parameter(
+                name, getattr(gait_defaults, name)).value)
+            for name in gait_defaults.__dataclass_fields__
+        }
+        self._control_frequency = float(self.declare_parameter(
+            'control_frequency', 100.0).value)
+        self._command_timeout = float(self.declare_parameter(
+            'command_timeout', 0.5).value)
+        self._velocity_ramp_rate = float(self.declare_parameter(
+            'velocity_ramp_rate', 0.5).value)
+        self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
+        self._pid_ki = float(self.declare_parameter('pose_pid.ki', 0.1).value)
+        self._pid_kd = float(self.declare_parameter('pose_pid.kd', 0.05).value)
+        self._pid_limit = float(self.declare_parameter(
+            'pose_pid.integral_limit', 0.5).value)
+        if self._control_frequency <= 0.0 or self._command_timeout <= 0.0:
+            raise ValueError('control_frequency and command_timeout must be positive')
+
+        geometry = RobotGeometry(**geometry_values)
+        self._kinematics = QuadrupedKinematics(geometry)
+        self._gait = GaitGenerator(geometry, GaitParameters(**gait_values))
+        self._command = Twist()
+        self._smoothed_velocity = [0.0, 0.0, 0.0]
+        self._body_rpy = (0.0, 0.0, 0.0)
+        self._body_translation = (0.0, 0.0, 0.0)
+        self._imu_rpy = (0.0, 0.0, 0.0)
+        self._imu_rates = (0.0, 0.0)
+        self._integral = [0.0, 0.0]
+        self._gait_enabled = True
+        self._balance_enabled = False
+        self._estop = False
+        self._gait_values = gait_values
+        self._contacts = {
+            name: False for name in self._kinematics.nominal_foot_positions}
+        self._last_command_time = self.get_clock().now()
+        self._publisher = self.create_publisher(
+            JointTrajectory, 'joint_trajectory_controller/joint_trajectory', 10)
+        self._subscription = self.create_subscription(
+            Twist, 'cmd_vel', self._on_command, 10)
+        self.create_subscription(PoseStamped, 'body_pose', self._on_pose, 10)
+        self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
+        self.create_subscription(Bool, 'estop', self._on_estop, 10)
+        self.create_subscription(Bool, 'imu_auto', self._on_imu_auto, 10)
+        self.create_subscription(
+            Float64, 'gait/clearance_height',
+            lambda message: self._set_gait_value(
+                'clearance_height', message.data), 10)
+        self.create_subscription(
+            Float64, 'gait/penetration_depth',
+            lambda message: self._set_gait_value(
+                'penetration_depth', message.data), 10)
+        self.create_subscription(
+            Float64, 'gait/swing_duration',
+            lambda message: self._set_gait_value(
+                'swing_duration', message.data), 10)
+        self.create_service(SetBool, 'gait/enable', self._set_gait_enabled)
+        self.create_service(SetBool, 'balance/enable', self._set_balance_enabled)
+        self._contact_subscriptions = [
+            self.create_subscription(
+                Bool,
+                f'contacts/{name}',
+                lambda message, leg=name: self._on_contact(leg, message),
+                10,
+            )
+            for name in self._contacts
+        ]
+        self._timer = self.create_timer(
+            1.0 / self._control_frequency, self._update)
+
+    def _on_command(self, message: Twist) -> None:
+        self._command = message
+        self._last_command_time = self.get_clock().now()
+
+    def _on_contact(self, leg_name: str, message: Bool) -> None:
+        self._contacts[leg_name] = message.data
+
+    def _on_pose(self, message: PoseStamped) -> None:
+        pose = message.pose
+        self._body_rpy = quaternion_to_rpy(
+            pose.orientation.x, pose.orientation.y,
+            pose.orientation.z, pose.orientation.w)
+        self._body_translation = (
+            pose.position.x, pose.position.y, pose.position.z)
+
+    def _on_imu(self, message: Imu) -> None:
+        orientation = message.orientation
+        self._imu_rpy = quaternion_to_rpy(
+            orientation.x, orientation.y, orientation.z, orientation.w)
+        self._imu_rates = (
+            message.angular_velocity.x, message.angular_velocity.y)
+
+    def _on_estop(self, message: Bool) -> None:
+        self._estop = message.data
+
+    def _on_imu_auto(self, message: Bool) -> None:
+        self._balance_enabled = message.data
+
+    def _set_gait_value(self, name: str, value: float) -> None:
+        values = dict(self._gait_values)
+        values[name] = float(value)
+        if name == 'swing_duration':
+            values['stance_duration'] = min(
+                values['stance_duration'], 1.3 * values[name])
+        try:
+            parameters = GaitParameters(**values)
+        except ValueError as error:
+            self.get_logger().error(f'Rejected gait adjustment: {error}')
+            return
+        phase = self._gait.phase
+        self._gait_values = values
+        self._gait = GaitGenerator(self._kinematics.geometry, parameters)
+        self._gait.reset(phase)
+
+    def _set_gait_enabled(self, request, response):
+        self._gait_enabled = request.data
+        self._gait.reset()
+        self._smoothed_velocity = [0.0, 0.0, 0.0]
+        if request.data:
+            self._body_rpy = (0.0, 0.0, 0.0)
+            self._body_translation = (0.0, 0.0, 0.0)
+        response.success = True
+        response.message = 'stepping' if request.data else 'viewing'
+        return response
+
+    def _set_balance_enabled(self, request, response):
+        self._balance_enabled = request.data
+        self._integral = [0.0, 0.0]
+        response.success = True
+        response.message = (
+            'IMU balance enabled' if request.data else 'IMU balance disabled')
+        return response
+
+    def _controlled_body_rpy(self, dt: float) -> tuple[float, float, float]:
+        if not self._balance_enabled:
+            self._integral = [0.0, 0.0]
+            return self._body_rpy
+        errors = (
+            self._body_rpy[0] - self._imu_rpy[0],
+            self._body_rpy[1] - self._imu_rpy[1],
+        )
+        for index, error in enumerate(errors):
+            self._integral[index] = max(
+                -self._pid_limit,
+                min(self._pid_limit, self._integral[index] + error * dt))
+        return (
+            -(self._pid_kp * errors[0] + self._pid_ki * self._integral[0]
+              - self._pid_kd * self._imu_rates[0]),
+            -(self._pid_kp * errors[1] + self._pid_ki * self._integral[1]
+              - self._pid_kd * self._imu_rates[1]),
+            self._body_rpy[2],
+        )
+
+    def _ramp(self, current: float, target: float, dt: float) -> float:
+        difference = target - current
+        step = self._velocity_ramp_rate * dt
+        if abs(difference) <= step:
+            return target
+        return current + math.copysign(step, difference)
+
+    def _update(self) -> None:
+        now = self.get_clock().now()
+        command_age = (now - self._last_command_time).nanoseconds / 1.0e9
+        immediate_stop = command_age > self._command_timeout or self._estop
+        if immediate_stop:
+            self._smoothed_velocity = [0.0, 0.0, 0.0]
+        else:
+            targets = (
+                self._command.linear.x,
+                self._command.linear.y,
+                self._command.angular.z,
+            )
+            dt = 1.0 / self._control_frequency
+            self._smoothed_velocity = [
+                self._ramp(current, target, dt)
+                for current, target in zip(self._smoothed_velocity, targets)
+            ]
+        velocity = tuple(self._smoothed_velocity[:2])
+        yaw_rate = self._smoothed_velocity[2]
+
+        try:
+            if self._gait_enabled and not self._estop:
+                feet = self._gait.update(
+                    1.0 / self._control_frequency,
+                    velocity,
+                    yaw_rate,
+                    self._contacts,
+                )
+            else:
+                self._gait.reset()
+                feet = self._kinematics.nominal_foot_positions
+            positions = self._kinematics.inverse(
+                self._controlled_body_rpy(1.0 / self._control_frequency),
+                self._body_translation,
+                feet,
+            )
+        except (ValueError, UnreachableTargetError) as error:
+            self.get_logger().error(f'Rejected gait command: {error}')
+            return
+
+        trajectory = JointTrajectory()
+        trajectory.header.stamp = now.to_msg()
+        trajectory.joint_names = list(self._kinematics.joint_names)
+        point = JointTrajectoryPoint()
+        point.positions = positions.reshape(-1).tolist()
+        point.time_from_start.nanosec = int(1.0e9 / self._control_frequency)
+        trajectory.points = [point]
+        self._publisher.publish(trajectory)
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    node = GaitController()
+    try:
+        rclpy.spin(node)
+    except (ExternalShutdownException, KeyboardInterrupt):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
