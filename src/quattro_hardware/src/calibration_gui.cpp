@@ -1,0 +1,435 @@
+#include <yaml-cpp/yaml.h>
+
+#include <QApplication>
+#include <QCloseEvent>
+#include <QCommandLineOption>
+#include <QCommandLineParser>
+#include <QFont>
+#include <QFontDatabase>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QString>
+#include <QVBoxLayout>
+#include <QWidget>
+
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <set>
+#include <stdexcept>
+#include <string>
+
+#include "gim6010_driver/motor_manager.hpp"
+
+namespace
+{
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kJogRadians = kPi / 180.0;
+constexpr auto kFeedbackTimeout = std::chrono::milliseconds{2000};
+
+struct JointDefinition
+{
+  const char * name;
+  const char * label;
+  int direction;
+};
+
+constexpr std::array<JointDefinition, 12> kJoints = {{
+  {"front_left_hip_joint", "front_left_hip_joint (0번)", -1},
+  {"front_left_upper_leg_joint", "front_left_upper_leg_joint (1번)", -1},
+  {"front_left_lower_leg_joint", "front_left_lower_leg_joint (2번)", -1},
+  {"front_right_hip_joint", "front_right_hip_joint (3번)", -1},
+  {"front_right_upper_leg_joint", "front_right_upper_leg_joint (4번)", 1},
+  {"front_right_lower_leg_joint", "front_right_lower_leg_joint (5번)", 1},
+  {"back_left_hip_joint", "back_left_hip_joint (6번)", 1},
+  {"back_left_upper_leg_joint", "back_left_upper_leg_joint (7번)", -1},
+  {"back_left_lower_leg_joint", "back_left_lower_leg_joint (8번)", -1},
+  {"back_right_hip_joint", "back_right_hip_joint (9번)", 1},
+  {"back_right_upper_leg_joint", "back_right_upper_leg_joint (10번)", 1},
+  {"back_right_lower_leg_joint", "back_right_lower_leg_joint (11번)", 1},
+}};
+
+void validateCalibration(const YAML::Node & root)
+{
+  const auto joints = root["joints"];
+  if (!joints || !joints.IsMap() || joints.size() != kJoints.size()) {
+    throw std::invalid_argument("캘리브레이션 YAML에는 정확히 12개 관절이 있어야 합니다.");
+  }
+
+  std::set<std::pair<std::string, int>> addresses;
+  for (const auto & expected : kJoints) {
+    const auto joint = joints[expected.name];
+    if (!joint) {
+      throw std::invalid_argument(std::string("캘리브레이션 항목이 없습니다: ") + expected.name);
+    }
+    const int direction = joint["direction"].as<int>();
+    if (direction != expected.direction) {
+      throw std::invalid_argument(
+              std::string(expected.name) + "의 direction이 레퍼런스 설정과 다릅니다.");
+    }
+    const int can_id = joint["can_id"].as<int>();
+    const auto can_interface = joint["can_interface"].as<std::string>();
+    if (can_id < 0 || can_id > 11) {
+      throw std::invalid_argument(std::string(expected.name) + "은 CAN ID 0~11을 사용해야 합니다.");
+    }
+    const std::string expected_interface = can_id <= 5 ? "can0" : "can1";
+    if (can_interface != expected_interface) {
+      throw std::invalid_argument(
+              std::string(expected.name) + "은 " + expected_interface + "을 사용해야 합니다.");
+    }
+    if (!addresses.emplace(can_interface, can_id).second) {
+      throw std::invalid_argument("캘리브레이션 YAML에 중복 CAN 주소가 있습니다.");
+    }
+    if (!std::isfinite(joint["offset"].as<double>()) ||
+      !std::isfinite(joint["kp"].as<double>()) ||
+      !std::isfinite(joint["kd"].as<double>()))
+    {
+      throw std::invalid_argument(std::string(expected.name) + "에 유효하지 않은 수치가 있습니다.");
+    }
+  }
+}
+
+void saveCalibration(
+  YAML::Node & root, const std::string & joint_name, double offset,
+  const std::filesystem::path & path)
+{
+  root["joints"][joint_name]["offset"] = offset;
+  YAML::Emitter output;
+  output.SetDoublePrecision(15);
+  output << root;
+  if (!output.good()) {
+    throw std::runtime_error("캘리브레이션 YAML 직렬화에 실패했습니다.");
+  }
+
+  const auto temporary = path.string() + ".tmp";
+  {
+    std::ofstream stream(temporary, std::ios::trunc);
+    if (!stream) {
+      throw std::runtime_error("임시 캘리브레이션 파일을 열 수 없습니다.");
+    }
+    stream << output.c_str() << '\n';
+    stream.flush();
+    if (!stream) {
+      throw std::runtime_error("캘리브레이션 파일을 쓰는 중 오류가 발생했습니다.");
+    }
+  }
+  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+    std::filesystem::remove(temporary);
+    throw std::runtime_error("캘리브레이션 파일 교체에 실패했습니다.");
+  }
+}
+
+class CalibrationWindow : public QWidget
+{
+public:
+  explicit CalibrationWindow(const std::filesystem::path & calibration_file)
+  : calibration_file_(calibration_file), calibration_(YAML::LoadFile(calibration_file.string()))
+  {
+    validateCalibration(calibration_);
+    setWindowTitle("Quattro 관절 캘리브레이션");
+    setMinimumWidth(680);
+    buildInterface();
+    selectJoint(0);
+  }
+
+protected:
+  void closeEvent(QCloseEvent * event) override
+  {
+    disableMotor();
+    event->accept();
+  }
+
+private:
+  void buildInterface()
+  {
+    auto * main_layout = new QVBoxLayout(this);
+    auto * warning = new QLabel(
+      "로봇을 안전하게 지지하고 controller_manager 및 다른 모든 CAN 제어 프로그램을 "
+      "종료하십시오. 선택한 모터 하나만 활성화됩니다.");
+    warning->setWordWrap(true);
+    warning->setStyleSheet("QLabel { color: #b00020; font-weight: bold; }");
+    main_layout->addWidget(warning);
+
+    auto * joint_group = new QGroupBox("1. 관절 하나 선택");
+    auto * joint_layout = new QGridLayout(joint_group);
+    for (std::size_t index = 0; index < kJoints.size(); ++index) {
+      auto * button = new QPushButton(kJoints[index].label);
+      button->setCheckable(true);
+      button->setMinimumHeight(54);
+      joint_buttons_[index] = button;
+      connect(button, &QPushButton::clicked, this, [this, index]() {selectJoint(index);});
+      joint_layout->addWidget(button, static_cast<int>(index / 3), static_cast<int>(index % 3));
+    }
+    main_layout->addWidget(joint_group);
+
+    selected_label_ = new QLabel;
+    loaded_offset_label_ = new QLabel;
+    proposed_offset_label_ = new QLabel("저장 예정 offset: 모터 활성화 후 계산");
+    position_label_ = new QLabel("모터 비활성화됨");
+    status_label_ = new QLabel("관절을 선택한 다음 모터를 활성화하십시오.");
+    main_layout->addWidget(selected_label_);
+    main_layout->addWidget(loaded_offset_label_);
+    main_layout->addWidget(proposed_offset_label_);
+    main_layout->addWidget(position_label_);
+
+    auto * activation_layout = new QHBoxLayout;
+    enable_button_ = new QPushButton("2. 선택한 모터 활성화");
+    disable_button_ = new QPushButton("모터 비활성화");
+    activation_layout->addWidget(enable_button_);
+    activation_layout->addWidget(disable_button_);
+    main_layout->addLayout(activation_layout);
+
+    auto * jog_group = new QGroupBox("3. 관절 영점 맞추기");
+    auto * jog_layout = new QHBoxLayout(jog_group);
+    minus_button_ = new QPushButton("-1도");
+    plus_button_ = new QPushButton("+1도");
+    save_button_ = new QPushButton("4. 현재 자세를 0도로 저장");
+    jog_layout->addWidget(minus_button_);
+    jog_layout->addWidget(plus_button_);
+    jog_layout->addWidget(save_button_);
+    main_layout->addWidget(jog_group);
+    main_layout->addWidget(status_label_);
+
+    connect(enable_button_, &QPushButton::clicked, this, [this]() {
+        runSafely([this]() {
+          enableMotor();
+      });
+    });
+    connect(disable_button_, &QPushButton::clicked, this, [this]() {disableMotor();});
+    connect(minus_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {jog(-1);});});
+    connect(plus_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {jog(1);});});
+    connect(save_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {save();});});
+    updateControls();
+  }
+
+  void showProposedOffset(double offset)
+  {
+    proposed_offset_label_->setText(QString("저장 예정 offset: %1 rad (%2도)")
+      .arg(offset, 0, 'f', 9)
+      .arg(offset * 180.0 / kPi, 0, 'f', 3));
+  }
+
+  template<typename FunctionT>
+  void runSafely(FunctionT function)
+  {
+    try {
+      function();
+    } catch (const std::exception & error) {
+      disableMotor();
+      QMessageBox::critical(this, "캘리브레이션 오류", error.what());
+      status_label_->setText(QString("오류: %1").arg(error.what()));
+    }
+  }
+
+  void selectJoint(std::size_t index)
+  {
+    if (motor_ != nullptr && index != selected_index_) {
+      disableMotor();
+    }
+    selected_index_ = index;
+    for (std::size_t button_index = 0; button_index < joint_buttons_.size(); ++button_index) {
+      joint_buttons_[button_index]->setChecked(button_index == selected_index_);
+    }
+    const auto config = calibration_["joints"][kJoints[index].name];
+    selected_label_->setText(QString("선택: %1, %2, CAN ID %3, 방향 %4")
+      .arg(kJoints[index].label)
+      .arg(config["can_interface"].as<std::string>().c_str())
+      .arg(config["can_id"].as<int>())
+      .arg(config["direction"].as<int>()));
+    const double loaded_offset = config["offset"].as<double>();
+    loaded_offset_label_->setText(QString("불러온 offset: %1 rad (%2도)")
+      .arg(loaded_offset, 0, 'f', 9)
+      .arg(loaded_offset * 180.0 / kPi, 0, 'f', 3));
+    proposed_offset_label_->setText("저장 예정 offset: 모터 활성화 후 계산");
+    status_label_->setText("선택한 모터는 비활성화 상태입니다.");
+    updateControls();
+  }
+
+  void enableMotor()
+  {
+    if (motor_ != nullptr) {
+      return;
+    }
+    const auto answer = QMessageBox::warning(
+      this, "모터 하나 활성화",
+      QString("%1 모터만 활성화하시겠습니까?\n\n"
+        "로봇을 안전하게 지지하고 관절에 하중이 걸리지 않아야 합니다.")
+      .arg(kJoints[selected_index_].label),
+      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes) {
+      return;
+    }
+
+    const auto config = calibration_["joints"][kJoints[selected_index_].name];
+    const auto can_interface = config["can_interface"].as<std::string>();
+    const auto can_id = static_cast<std::uint8_t>(config["can_id"].as<int>());
+    kp_ = config["kp"].as<double>();
+    kd_ = config["kd"].as<double>();
+    direction_ = config["direction"].as<int>();
+
+    manager_ = std::make_unique<gim6010_driver::MotorManager>(can_interface);
+    manager_->addMotor(can_id);
+    motor_ = &manager_->motor(can_id);
+    motor_->clearErrors();
+    motor_->setLimits(5.0F, 10.0F);
+    motor_->setMitMode();
+    if (!waitForFeedback()) {
+      throw std::runtime_error("선택한 모터에서 엔코더 피드백을 받지 못했습니다.");
+    }
+
+    target_ = motor_->feedback().position;
+    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    motor_->enable();
+    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    jog_degrees_ = 0;
+    showProposedOffset(direction_ * target_);
+    position_label_->setText(QString("모터 위치 %1 rad 유지 중, 조정량 0도")
+      .arg(target_, 0, 'f', 6));
+    status_label_->setText("모터가 활성화되어 초기 위치를 유지하고 있습니다.");
+    updateControls();
+  }
+
+  bool waitForFeedback()
+  {
+    const auto deadline = std::chrono::steady_clock::now() + kFeedbackTimeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      motor_->requestEncoderEstimates();
+      manager_->poll(std::chrono::milliseconds{20});
+      if (motor_->hasFeedback()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  double refreshPosition()
+  {
+    motor_->requestEncoderEstimates();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{250};
+    while (std::chrono::steady_clock::now() < deadline) {
+      manager_->poll(std::chrono::milliseconds{10});
+    }
+    if (!motor_->hasFeedback()) {
+      throw std::runtime_error("엔코더 피드백을 사용할 수 없습니다.");
+    }
+    return motor_->feedback().position;
+  }
+
+  void jog(int joint_degrees)
+  {
+    if (motor_ == nullptr) {
+      throw std::runtime_error("조정하기 전에 선택한 모터를 활성화하십시오.");
+    }
+    target_ += direction_ * joint_degrees * kJogRadians;
+    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    jog_degrees_ += joint_degrees;
+    showProposedOffset(direction_ * target_);
+    position_label_->setText(QString("목표 모터 위치 %1 rad, 누적 조정량 %2도")
+      .arg(target_, 0, 'f', 6).arg(jog_degrees_));
+  }
+
+  void save()
+  {
+    if (motor_ == nullptr) {
+      throw std::runtime_error("저장하기 전에 선택한 모터를 활성화하고 영점을 맞추십시오.");
+    }
+    const double motor_position = refreshPosition();
+    const double offset = direction_ * motor_position;
+    saveCalibration(
+      calibration_, kJoints[selected_index_].name, offset, calibration_file_);
+    loaded_offset_label_->setText(QString("불러온 offset: %1 rad (%2도)")
+      .arg(offset, 0, 'f', 9)
+      .arg(offset * 180.0 / kPi, 0, 'f', 3));
+    showProposedOffset(offset);
+    disableMotor();
+    status_label_->setText(QString("%3의 offset을 %1 rad (%2도)로 저장했습니다.")
+      .arg(offset, 0, 'f', 9)
+      .arg(offset * 180.0 / kPi, 0, 'f', 3)
+      .arg(kJoints[selected_index_].label));
+  }
+
+  void disableMotor()
+  {
+    if (manager_) {
+      manager_->disableAll();
+    }
+    motor_ = nullptr;
+    manager_.reset();
+    position_label_->setText("모터 비활성화됨");
+    updateControls();
+  }
+
+  void updateControls()
+  {
+    const bool active = motor_ != nullptr;
+    enable_button_->setEnabled(!active);
+    disable_button_->setEnabled(active);
+    minus_button_->setEnabled(active);
+    plus_button_->setEnabled(active);
+    save_button_->setEnabled(active);
+  }
+
+  std::filesystem::path calibration_file_;
+  YAML::Node calibration_;
+  std::array<QPushButton *, 12> joint_buttons_{};
+  QLabel * selected_label_{nullptr};
+  QLabel * loaded_offset_label_{nullptr};
+  QLabel * proposed_offset_label_{nullptr};
+  QLabel * position_label_{nullptr};
+  QLabel * status_label_{nullptr};
+  QPushButton * enable_button_{nullptr};
+  QPushButton * disable_button_{nullptr};
+  QPushButton * minus_button_{nullptr};
+  QPushButton * plus_button_{nullptr};
+  QPushButton * save_button_{nullptr};
+  std::size_t selected_index_{0};
+  std::unique_ptr<gim6010_driver::MotorManager> manager_;
+  gim6010_driver::Gim6010Motor * motor_{nullptr};
+  double target_{0.0};
+  double kp_{20.0};
+  double kd_{0.5};
+  int direction_{1};
+  int jog_degrees_{0};
+};
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  QApplication application(argc, argv);
+  QApplication::setApplicationName("quattro_calibration_gui");
+  if (QFontDatabase().families().contains("Noto Sans CJK KR")) {
+    QApplication::setFont(QFont("Noto Sans CJK KR", 10));
+  }
+  QCommandLineParser parser;
+  parser.setApplicationDescription("Quattro 관절을 한 번에 하나씩 캘리브레이션합니다.");
+  parser.addHelpOption();
+  const QCommandLineOption calibration_option(
+    {"c", "calibration-file"}, "머신별 캘리브레이션 YAML", "경로");
+  parser.addOption(calibration_option);
+  parser.process(application);
+  if (!parser.isSet(calibration_option)) {
+    parser.showHelp(1);
+  }
+
+  try {
+    const std::filesystem::path calibration_file =
+      parser.value(calibration_option).toStdString();
+    if (!std::filesystem::is_regular_file(calibration_file)) {
+      throw std::invalid_argument("캘리브레이션 파일이 존재하지 않습니다.");
+    }
+    CalibrationWindow window(calibration_file);
+    window.show();
+    return application.exec();
+  } catch (const std::exception & error) {
+    QMessageBox::critical(nullptr, "캘리브레이션 오류", error.what());
+    return 1;
+  }
+}

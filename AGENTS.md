@@ -338,11 +338,13 @@ quattro_hardware/
 `quattro_hardware`는 다음 정보를 알고 있다.
 
 ```text
-fl_hip_joint → CAN ID 1
-fl_thigh_joint → CAN ID 2
-fl_calf_joint → CAN ID 3
+front_left_hip_joint → 관절 번호 0 → CAN ID 0 → can0
+front_left_upper_leg_joint → 관절 번호 1 → CAN ID 1 → can0
 ...
 ```
+
+전체 관절 번호, CAN ID 및 CAN 인터페이스 매핑은
+`12. GIM6010-8 하드웨어 규칙`의 기준표를 따른다.
 
 예를 들어 모터 피드백은 다음 경로로 전달된다.
 
@@ -928,6 +930,93 @@ calibration.yaml.example
 - CAN Simple
 - 기본 bitrate `500000`
 - MIT Control 사용 예정
+
+### 관절 번호와 CAN 채널 매핑
+
+관절 번호는 `quattro` 내부의 12축 순서이자 모터 CAN ID와 동일하게
+사용한다. CAN ID `0~5`는 `can0`, CAN ID `6~11`은 `can1`에 연결한다.
+
+| 관절 번호 | ROS 관절 이름 | CAN ID | CAN 인터페이스 |
+|---:|---|---:|---|
+| 0 | `front_left_hip_joint` | 0 | `can0` |
+| 1 | `front_left_upper_leg_joint` | 1 | `can0` |
+| 2 | `front_left_lower_leg_joint` | 2 | `can0` |
+| 3 | `front_right_hip_joint` | 3 | `can0` |
+| 4 | `front_right_upper_leg_joint` | 4 | `can0` |
+| 5 | `front_right_lower_leg_joint` | 5 | `can0` |
+| 6 | `back_left_hip_joint` | 6 | `can1` |
+| 7 | `back_left_upper_leg_joint` | 7 | `can1` |
+| 8 | `back_left_lower_leg_joint` | 8 | `can1` |
+| 9 | `back_right_hip_joint` | 9 | `can1` |
+| 10 | `back_right_upper_leg_joint` | 10 | `can1` |
+| 11 | `back_right_lower_leg_joint` | 11 | `can1` |
+
+이 매핑은 `quattro_description`의 `<ros2_control>` 설정, 머신별
+`calibration.yaml`, 캘리브레이션 GUI에서 동일하게 유지한다. 관절 이름에
+CAN ID를 포함하지 않는다.
+
+### 관절 캘리브레이션 GUI
+
+관절 영점 캘리브레이션 프로그램은 `quattro_hardware` 패키지의
+`src/quattro_hardware/src/calibration_gui.cpp`에 구현한다. 실행 파일 이름은
+`calibration_gui`이며 Docker 컨테이너 내부에서 다음과 같이 실행한다.
+
+```bash
+ros2 run quattro_hardware calibration_gui \
+  --calibration-file /ws/src/quattro_bringup/config/calibration.yaml
+```
+
+캘리브레이션 설정 파일의 역할은 다음과 같이 구분한다.
+
+- `/ws/src/quattro_bringup/config/calibration.yaml`: 실제 로봇에서 사용하는 머신별 캘리브레이션 값이다. Git에 저장하지 않는다.
+- `src/quattro_bringup/config/calibration.yaml.example`: 실제 설정 파일을 만들기 위한 Git 관리 예제이다.
+- `src/quattro_description/config/calibration.yaml`: Xacro 변환, URDF 검사, 시각화를 위한 영점 오프셋 기본값이다. 실제 로봇의 캘리브레이션 파일로 사용하지 않는다.
+
+GUI는 Qt5로 구현하며 다음 방식으로 동작한다.
+
+- 관절 선택 버튼에는 관절 이름과 관절 번호만 표시한다. 예: `front_left_hip_joint (0번)`
+- 선택한 관절의 CAN 채널, CAN ID, direction과 불러온 offset을 별도 정보 영역에 표시한다.
+- offset은 radian과 degree를 함께 표시하지만 YAML에는 radian으로 저장한다.
+- `+1도`, `-1도` 버튼으로 선택한 관절만 ROS joint 좌표계 기준 1도씩 움직인다.
+- 동시에 하나의 모터만 활성화하며, 다른 관절을 선택하면 기존 모터를 먼저 비활성화한다.
+- 모터 활성화 전 확인 대화상자를 표시하고, 현재 encoder 위치를 읽은 뒤 그 위치를 hold한 상태에서 제어를 시작한다.
+- 저장 시 목표값이 아니라 최신 실제 encoder feedback을 사용해 offset을 계산한다.
+- 저장, 오류, 창 닫기, 명시적 비활성화 시 활성 모터를 비활성화한다.
+- GUI에서 CAN ID `0~5`는 `can0`, CAN ID `6~11`은 `can1`을 사용하며, 중복 주소와 잘못된 설정을 거부한다.
+
+저장되는 영점 offset 계산식은 다음과 같다.
+
+```text
+offset = direction × current_motor_position
+```
+
+`quattro_hardware`에서 사용하는 좌표 변환은 다음과 같다.
+
+```text
+joint_position = direction × motor_position - offset
+motor_command = direction × (joint_command + offset)
+```
+
+관절 direction은 기존 레퍼런스 코드의 값을 그대로 사용한다.
+
+```text
+[-1, -1, -1, -1, 1, 1, 1, -1, -1, 1, 1, 1]
+```
+
+캘리브레이션 실행 전에는 반드시 로봇을 지지대에 올려 다리에 하중이 걸리지
+않게 하고, `controller_manager`를 포함한 다른 모든 CAN 송신 프로그램을
+종료한다. 단일 모터 동작을 확인한 뒤 다음 관절로 진행한다.
+
+Xacro의 `calibration_file` 인자는 선택한 YAML을 읽어 각 관절의
+`can_interface`, `can_id`, `direction`, `offset`, `kp`, `kd`를
+`<ros2_control>` 하드웨어 파라미터로 전달한다. 실제 bringup에서는 머신별
+파일을 명시적으로 지정해야 한다.
+
+GUI 실행에는 Docker의 `DISPLAY`와 X11 전달 설정이 필요하다. 한글 표시를
+위해 Docker 이미지에 `fonts-noto-cjk`를 설치하며, 이미지 변경 후에는
+컨테이너를 다시 빌드해야 한다.
+
+상세 사용 절차와 문제 해결 방법은 `docs/calibration.md`를 따른다.
 
 저수준 구현 위치:
 

@@ -14,6 +14,9 @@ find_package(pluginlib REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(gim6010_driver REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
 
 add_library(${PROJECT_NAME} SHARED src/quattro_system.cpp)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
@@ -24,10 +27,16 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp rclcpp_lifecycle hardware_interface pluginlib gim6010_driver)
 pluginlib_export_plugin_description_file(hardware_interface quattro_hardware.xml)
 
+add_executable(calibration_gui src/calibration_gui.cpp)
+target_compile_features(calibration_gui PUBLIC cxx_std_17)
+target_link_libraries(calibration_gui yaml-cpp Qt5::Widgets)
+ament_target_dependencies(calibration_gui gim6010_driver)
+
 install(DIRECTORY include/ DESTINATION include)
 install(FILES quattro_hardware.xml DESTINATION share/${PROJECT_NAME})
 install(TARGETS ${PROJECT_NAME} EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+install(TARGETS calibration_gui DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

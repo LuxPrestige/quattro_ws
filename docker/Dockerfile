@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     pkg-config \
+    fonts-noto-cjk \
     can-utils \
     iproute2 \
     i2c-tools \
