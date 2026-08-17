@@ -932,6 +932,78 @@ docker compose up -d dev
 docker compose exec dev bash
 ```
 
+### 데스크톱 NVIDIA GPU 사용
+
+Gazebo와 RViz2를 데스크톱 Linux에서 실행할 때는 NVIDIA GPU 하드웨어
+가속을 사용한다. 호스트의 NVIDIA 드라이버와 NVIDIA Container Toolkit이
+정상적으로 설치되어 있어야 한다.
+
+`compose.yaml`의 `dev` 서비스는 다음 설정으로 모든 NVIDIA GPU와 그래픽
+기능을 컨테이너에 전달한다.
+
+```yaml
+gpus: all
+
+environment:
+  NVIDIA_VISIBLE_DEVICES: all
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,display
+```
+
+`LIBGL_ALWAYS_SOFTWARE=1`은 Mesa의 CPU 렌더러를 강제하므로 Gazebo 또는
+RViz2를 실행하는 개발 컨테이너에 설정하지 않는다.
+
+Ubuntu 기본 APT 저장소에서 `nvidia-container-toolkit`을 찾지 못하는 경우
+NVIDIA 공식 저장소를 먼저 추가한다.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  ca-certificates curl gnupg2
+
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor \
+    -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -sL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+Docker를 재시작하면 기존 컨테이너가 정지할 수 있으므로 개발 컨테이너를
+다시 생성하고 GPU 인식을 확인한다.
+
+```bash
+cd ~/lgh_ws
+
+docker compose up -d dev
+docker compose exec dev nvidia-smi
+```
+
+컨테이너의 `nvidia-smi` 출력에 호스트 GPU가 표시되어야 한다. Gazebo 실행
+중에는 다른 호스트 터미널에서 다음 명령으로 GPU 사용률과 Gazebo 프로세스를
+확인한다.
+
+```bash
+watch -n 1 nvidia-smi
+```
+
+다음 오류가 발생하면 NVIDIA Container Toolkit 또는 Docker runtime 설정이
+완료되지 않은 상태이다.
+
+```text
+failed to discover GPU vendor from CDI: no known GPU vendor found
+```
+
+이 경우 `nvidia-ctk runtime configure --runtime=docker`와 Docker 재시작을
+다시 확인한다. 이 NVIDIA GPU 설정은 NVIDIA GPU가 장착된 데스크톱용이다.
+Raspberry Pi처럼 NVIDIA GPU가 없는 장치에서는 `gpus: all`을 요구하는
+구성으로 컨테이너를 실행하지 않는다.
+
 컨테이너 내부 기본 위치:
 
 ```text
