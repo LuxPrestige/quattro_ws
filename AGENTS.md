@@ -56,6 +56,7 @@ lgh_ws/
     ├── quattro/
     ├── quattro_description/
     ├── quattro_bringup/
+    ├── quattro_gazebo/
     ├── quattro_hardware/
     ├── quattro_sensors/
     ├── quattro_teleop/
@@ -124,6 +125,39 @@ joint limit
 * 상위 제어 노드 실행
 
 드라이버 구현이나 제어 알고리즘은 포함하지 않는다.
+
+---
+
+### `quattro_gazebo`
+
+Gazebo Harmonic 기반 Quattro 시뮬레이션 패키지.
+
+담당 기능:
+
+* Gazebo world
+* `gz_ros2_control` controller 설정
+* Gazebo 로봇 생성
+* ROS-Gazebo clock bridge
+* 시뮬레이션용 launch 파일
+* Gazebo, gait controller, RViz2 실행 조합
+
+실제 로봇 bringup, 하드웨어 드라이버 또는 보행 알고리즘은 포함하지 않는다.
+시뮬레이션 전용 world, controller YAML 및 launch 파일은
+`quattro_bringup`이 아니라 이 패키지에서 관리한다.
+
+기본 실행 명령:
+
+```bash
+ros2 launch quattro_gazebo simulation.launch.py
+```
+
+GUI 없이 실행하려면 다음을 사용한다.
+
+```bash
+ros2 launch quattro_gazebo simulation.launch.py \
+  headless:=true \
+  use_rviz:=false
+```
 
 ---
 

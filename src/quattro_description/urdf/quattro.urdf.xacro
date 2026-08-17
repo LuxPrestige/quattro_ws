@@ -4,6 +4,10 @@
   <xacro:arg
     name="calibration_file"
     default="../config/calibration.yaml"/>
+  <xacro:arg name="simulation" default="false"/>
+  <xacro:arg
+    name="simulation_controllers"
+    default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
   <xacro:property
     name="hardware_calibration"
     value="${xacro.load_yaml('$(arg calibration_file)')['joints']}"/>
@@ -61,6 +65,20 @@
       <param name="offset">${hardware_calibration[name]['offset']}</param>
       <param name="kp">${hardware_calibration[name]['kp']}</param>
       <param name="kd">${hardware_calibration[name]['kd']}</param>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="quattro_simulation_joint" params="name lower upper initial_value">
+    <joint name="${name}">
+      <command_interface name="position">
+        <param name="min">${lower}</param>
+        <param name="max">${upper}</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">${initial_value}</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
     </joint>
   </xacro:macro>
 
@@ -474,27 +492,57 @@
     <child link="back_right_foot_link"/>
   </joint>
 
-  <ros2_control name="QuattroSystem" type="system">
-    <hardware>
-      <plugin>quattro_hardware/QuattroSystem</plugin>
-      <param name="feedback_timeout_ms">100</param>
-      <param name="startup_timeout_ms">1000</param>
-      <param name="command_timeout_ms">100</param>
-      <param name="motor_velocity_limit">50.0</param>
-      <param name="motor_current_limit">20.0</param>
-    </hardware>
-    <xacro:quattro_hardware_joint name="front_left_hip_joint" lower="-1.04" upper="1.04"/>
-    <xacro:quattro_hardware_joint name="front_left_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
-    <xacro:quattro_hardware_joint name="front_left_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
-    <xacro:quattro_hardware_joint name="front_right_hip_joint" lower="-1.04" upper="1.04"/>
-    <xacro:quattro_hardware_joint name="front_right_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
-    <xacro:quattro_hardware_joint name="front_right_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
-    <xacro:quattro_hardware_joint name="back_left_hip_joint" lower="-1.04" upper="1.04"/>
-    <xacro:quattro_hardware_joint name="back_left_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
-    <xacro:quattro_hardware_joint name="back_left_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
-    <xacro:quattro_hardware_joint name="back_right_hip_joint" lower="-1.04" upper="1.04"/>
-    <xacro:quattro_hardware_joint name="back_right_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
-    <xacro:quattro_hardware_joint name="back_right_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
-  </ros2_control>
+  <xacro:unless value="$(arg simulation)">
+    <ros2_control name="QuattroSystem" type="system">
+      <hardware>
+        <plugin>quattro_hardware/QuattroSystem</plugin>
+        <param name="feedback_timeout_ms">100</param>
+        <param name="startup_timeout_ms">1000</param>
+        <param name="command_timeout_ms">100</param>
+        <param name="motor_velocity_limit">50.0</param>
+        <param name="motor_current_limit">20.0</param>
+      </hardware>
+      <xacro:quattro_hardware_joint name="front_left_hip_joint" lower="-1.04" upper="1.04"/>
+      <xacro:quattro_hardware_joint name="front_left_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
+      <xacro:quattro_hardware_joint name="front_left_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
+      <xacro:quattro_hardware_joint name="front_right_hip_joint" lower="-1.04" upper="1.04"/>
+      <xacro:quattro_hardware_joint name="front_right_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
+      <xacro:quattro_hardware_joint name="front_right_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
+      <xacro:quattro_hardware_joint name="back_left_hip_joint" lower="-1.04" upper="1.04"/>
+      <xacro:quattro_hardware_joint name="back_left_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
+      <xacro:quattro_hardware_joint name="back_left_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
+      <xacro:quattro_hardware_joint name="back_right_hip_joint" lower="-1.04" upper="1.04"/>
+      <xacro:quattro_hardware_joint name="back_right_upper_leg_joint" lower="-1.57079632679" upper="2.59"/>
+      <xacro:quattro_hardware_joint name="back_right_lower_leg_joint" lower="-2.9" upper="1.57079632679"/>
+    </ros2_control>
+  </xacro:unless>
+
+  <xacro:if value="$(arg simulation)">
+    <ros2_control name="GazeboSimSystem" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
+      <xacro:quattro_simulation_joint name="front_left_hip_joint" lower="-1.04" upper="1.04" initial_value="0.0"/>
+      <xacro:quattro_simulation_joint name="front_left_upper_leg_joint" lower="-1.57079632679" upper="2.59" initial_value="0.63356747785"/>
+      <xacro:quattro_simulation_joint name="front_left_lower_leg_joint" lower="-2.9" upper="1.57079632679" initial_value="-1.53223802029"/>
+      <xacro:quattro_simulation_joint name="front_right_hip_joint" lower="-1.04" upper="1.04" initial_value="0.0"/>
+      <xacro:quattro_simulation_joint name="front_right_upper_leg_joint" lower="-1.57079632679" upper="2.59" initial_value="0.63356747785"/>
+      <xacro:quattro_simulation_joint name="front_right_lower_leg_joint" lower="-2.9" upper="1.57079632679" initial_value="-1.53223802029"/>
+      <xacro:quattro_simulation_joint name="back_left_hip_joint" lower="-1.04" upper="1.04" initial_value="0.0"/>
+      <xacro:quattro_simulation_joint name="back_left_upper_leg_joint" lower="-1.57079632679" upper="2.59" initial_value="0.63356747785"/>
+      <xacro:quattro_simulation_joint name="back_left_lower_leg_joint" lower="-2.9" upper="1.57079632679" initial_value="-1.53223802029"/>
+      <xacro:quattro_simulation_joint name="back_right_hip_joint" lower="-1.04" upper="1.04" initial_value="0.0"/>
+      <xacro:quattro_simulation_joint name="back_right_upper_leg_joint" lower="-1.57079632679" upper="2.59" initial_value="0.63356747785"/>
+      <xacro:quattro_simulation_joint name="back_right_lower_leg_joint" lower="-2.9" upper="1.57079632679" initial_value="-1.53223802029"/>
+    </ros2_control>
+
+    <gazebo>
+      <plugin
+        filename="libgz_ros2_control-system.so"
+        name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(arg simulation_controllers)</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
 
 </robot>

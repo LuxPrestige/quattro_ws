@@ -47,6 +47,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ros2-controllers \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-ros-gz-sim \
+    ros-${ROS_DISTRO}-ros-gz-bridge \
+    ros-${ROS_DISTRO}-gz-ros2-control \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     Adafruit-Blinka \
     Adafruit-Extended-Bus \

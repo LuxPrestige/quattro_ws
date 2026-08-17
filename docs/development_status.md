@@ -33,6 +33,7 @@ src/
 ├── quattro/              상위 제어, FK/IK, gait, 자세 제어
 ├── quattro_description/  URDF/Xacro, STL, RViz 설정
 ├── quattro_bringup/      시스템 조합 launch
+├── quattro_gazebo/       Gazebo Harmonic 시뮬레이션
 ├── quattro_hardware/     ros2_control 및 GIM6010 하드웨어 계층 예정
 ├── quattro_sensors/      BNO085 IMU 드라이버
 └── quattro_teleop/       조이스틱 및 키보드 입력
