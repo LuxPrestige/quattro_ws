@@ -159,6 +159,139 @@ ros2 launch quattro_gazebo simulation.launch.py \
   use_rviz:=false
 ```
 
+#### 현재 Gazebo 구현 구조
+
+시뮬레이션 관련 파일은 다음 위치에서 관리한다.
+
+```text
+src/quattro_gazebo/
+├── CMakeLists.txt
+├── package.xml
+├── config/
+│   └── gazebo_controllers.yaml
+├── launch/
+│   └── simulation.launch.py
+└── worlds/
+    └── flat.world.sdf
+```
+
+ROS 2 Jazzy의 기본 조합인 Gazebo Harmonic과 `gz_ros2_control`을 사용한다.
+Docker 이미지에는 다음 패키지를 설치한다.
+
+```text
+ros-jazzy-ros-gz-sim
+ros-jazzy-ros-gz-bridge
+ros-jazzy-gz-ros2-control
+```
+
+`quattro_description/urdf/quattro.urdf.xacro`는 `simulation` 인자로 실제
+하드웨어와 Gazebo 하드웨어를 분기한다.
+
+```text
+simulation:=false
+    → quattro_hardware/QuattroSystem
+
+simulation:=true
+    → gz_ros2_control/GazeboSimSystem
+```
+
+시뮬레이션 controller YAML은 Xacro의 `simulation_controllers` 인자로
+전달한다. 기본 소스 경로는 다음과 같다.
+
+```text
+src/quattro_gazebo/config/gazebo_controllers.yaml
+```
+
+시뮬레이션에서도 기존 Xacro의 visual과 collision 정의를 사용한다. 기존에
+STL을 사용하는 link의 collision을 임의로 primitive 또는 단순 mesh로
+변경하지 않는다. 성능이나 물리 안정성 문제가 실제로 확인된 경우에만 별도
+collision 형상을 검토한다.
+
+Gazebo용 12축 초기 관절값은 기존 IK의 nominal stance와 일치시켜 시작 순간
+급격한 관절 이동을 방지한다.
+
+```text
+hip joint        :  0.0 rad
+upper leg joint  :  0.63356747785 rad
+lower leg joint  : -1.53223802029 rad
+```
+
+`gazebo_controllers.yaml`에는 다음 controller를 정의한다.
+
+- `joint_state_broadcaster`: Gazebo의 실제 관절 상태를 `/joint_states`로 발행한다.
+- `joint_trajectory_controller`: 12축 position command를 받고 position과 velocity state를 사용한다.
+
+controller manager update rate는 `100 Hz`이며 모든 시뮬레이션 ROS 노드는
+`use_sim_time:=true`를 사용한다. Gazebo Transport의 `/clock`은
+`ros_gz_bridge`를 통해 ROS의 `/clock`으로 전달한다.
+
+현재 launch 실행 흐름은 다음과 같다.
+
+```text
+flat.world.sdf 로딩
+    ↓
+robot_state_publisher 및 /clock bridge 시작
+    ↓
+robot_description 토픽으로 quattro 모델 생성
+    ↓
+joint_state_broadcaster 로딩
+joint_trajectory_controller 로딩
+    ↓
+quattro/gait_controller 시작
+    ↓
+선택적으로 RViz2 시작
+```
+
+로봇은 world 기준 `z=0.325 m`에서 생성한다. world의 physics step은
+`0.001 s`, real-time factor는 `1.0`, 지면 마찰 계수는 `mu=1.0`,
+`mu2=1.0`으로 설정한다.
+
+기존 gait controller는 다음 토픽으로 시뮬레이션 controller에 12축 궤적을
+전달한다.
+
+```text
+/joint_trajectory_controller/joint_trajectory
+```
+
+보행 속도 명령 예시는 다음과 같다.
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+  "{linear: {x: 0.1}, angular: {z: 0.0}}" -r 10
+```
+
+Gazebo 관련 변경 후에는 Docker 컨테이너 안에서 다음 검사를 수행한다.
+
+```bash
+cd /ws
+
+xacro src/quattro_description/urdf/quattro.urdf.xacro \
+  simulation:=true > /tmp/quattro_sim.urdf
+check_urdf /tmp/quattro_sim.urdf
+
+gz sdf -k src/quattro_gazebo/worlds/flat.world.sdf
+
+colcon build --symlink-install \
+  --packages-select quattro_description quattro quattro_gazebo \
+  --event-handlers console_direct+
+
+ros2 launch quattro_gazebo simulation.launch.py \
+  headless:=true \
+  use_rviz:=false
+```
+
+실행 후 최소한 다음 항목을 확인한다.
+
+- Gazebo에 `quattro` 모델이 생성되는지 확인한다.
+- `joint_state_broadcaster`와 `joint_trajectory_controller`가 `active`인지 확인한다.
+- `/clock` 값이 증가하는지 확인한다.
+- `/joint_states`에 12개 관절의 실제 Gazebo 상태가 발행되는지 확인한다.
+- gait controller가 12축 `JointTrajectory`를 발행하는지 확인한다.
+
+현재 RViz2는 관절 상태와 TF를 표시한다. Gazebo world에서 이동하는
+`base_link` 위치까지 RViz2에서 추적하려면 향후 odometry 또는 Gazebo pose를
+기반으로 한 world/odom TF가 추가로 필요하다.
+
 ---
 
 ### `gim6010_driver`
