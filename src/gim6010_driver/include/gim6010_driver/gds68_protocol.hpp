@@ -23,6 +23,7 @@ enum class Gds68Command : std::uint8_t
   kSetLimits = 0x0F,
   kSetTrajectoryVelocityLimit = 0x11,
   kSetTrajectoryAccelerationLimits = 0x12,
+  kIq = 0x14,
   kBusVoltageCurrent = 0x17,
   kClearErrors = 0x18,
   kSetPositionGain = 0x1A,

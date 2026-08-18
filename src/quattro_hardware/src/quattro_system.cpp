@@ -547,10 +547,12 @@ hardware_interface::CallbackReturn QuattroSystem::on_shutdown(const rclcpp_lifec
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-void QuattroSystem::requestBusTelemetry()
+void QuattroSystem::requestMotorTelemetry()
 {
   for (auto & joint : joints_) {
-    joint.manager->motor(joint.node_id).requestBusVoltageCurrent();
+    auto & motor = joint.manager->motor(joint.node_id);
+    motor.requestIq();
+    motor.requestBusVoltageCurrent();
   }
 }
 
@@ -577,7 +579,7 @@ void QuattroSystem::captureFaultDiagnostics()
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
       }
     }
-    requestBusTelemetry();
+    requestMotorTelemetry();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
     while (std::chrono::steady_clock::now() < deadline) {
       pollManagers();
@@ -673,6 +675,12 @@ void QuattroSystem::publishDiagnostics(bool force)
           "bus_voltage_v", std::to_string(motor.busVoltageCurrent().voltage)));
       status.values.push_back(diagnosticValue(
           "bus_current_a", std::to_string(motor.busVoltageCurrent().current)));
+    }
+    if (motor.hasIq()) {
+      status.values.push_back(diagnosticValue(
+          "iq_setpoint_a", std::to_string(motor.iq().setpoint)));
+      status.values.push_back(diagnosticValue(
+          "iq_measured_a", std::to_string(motor.iq().measured)));
     }
     for (const auto type : {gim6010_driver::ErrorType::kMotor,
         gim6010_driver::ErrorType::kEncoder, gim6010_driver::ErrorType::kController,
@@ -792,7 +800,7 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
     }
     const auto now = std::chrono::steady_clock::now();
     if (active_ && now >= next_telemetry_request_) {
-      requestBusTelemetry();
+      requestMotorTelemetry();
       next_telemetry_request_ = now + telemetry_period_;
     }
     publishDiagnostics();

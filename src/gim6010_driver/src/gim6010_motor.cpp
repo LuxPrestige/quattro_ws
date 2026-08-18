@@ -159,6 +159,11 @@ void Gim6010Motor::requestError(ErrorType type)
   pending_error_type_ = type;
   sendRaw(kCommandGetError, &value, 1);
 }
+void Gim6010Motor::requestIq()
+{
+  has_iq_ = false;
+  sendRaw(kCommandGetIq, nullptr, 0, true);
+}
 void Gim6010Motor::requestBusVoltageCurrent()
 {
   has_bus_voltage_current_ = false;
@@ -214,6 +219,11 @@ void Gim6010Motor::updateError(const std::uint8_t * data, std::size_t length)
   if (!pending_error_type_) {return;}
   errors_[*pending_error_type_] = decodeError(data, length, *pending_error_type_);
   pending_error_type_.reset();
+}
+void Gim6010Motor::updateIq(const std::uint8_t * data, std::size_t length)
+{
+  iq_ = decodeIqFeedback(data, length);
+  has_iq_ = true;
 }
 void Gim6010Motor::updateBusVoltageCurrent(const std::uint8_t * data, std::size_t length)
 {
@@ -280,6 +290,8 @@ std::uint64_t Gim6010Motor::error(ErrorType type) const
   if (entry == errors_.end()) {throw std::logic_error("GIM6010 error value is unavailable");}
   return entry->second;
 }
+bool Gim6010Motor::hasIq() const noexcept {return has_iq_;}
+const IqFeedback & Gim6010Motor::iq() const noexcept {return iq_;}
 bool Gim6010Motor::hasBusVoltageCurrent() const noexcept {return has_bus_voltage_current_;}
 const BusVoltageCurrent & Gim6010Motor::busVoltageCurrent() const noexcept
 {

@@ -36,6 +36,7 @@ int main(int argc, char ** argv)
     auto & motor = manager.motor(node_id);
 
     motor.requestEncoderEstimates();
+    motor.requestIq();
     motor.requestBusVoltageCurrent();
     pollUntil(manager, std::chrono::steady_clock::now() + std::chrono::seconds{1});
     for (const auto type : {gim6010_driver::ErrorType::kMotor,
@@ -65,6 +66,12 @@ int main(int argc, char ** argv)
     if (motor.hasBusVoltageCurrent()) {
       const auto & bus = motor.busVoltageCurrent();
       std::cout << "bus_voltage_v=" << bus.voltage << " bus_current_a=" << bus.current << '\n';
+    }
+    if (motor.hasIq()) {
+      const auto & iq = motor.iq();
+      std::cout << "iq_setpoint_a=" << iq.setpoint << " iq_measured_a=" << iq.measured << '\n';
+    } else {
+      std::cout << "iq=unavailable\n";
     }
     for (const auto type : {gim6010_driver::ErrorType::kMotor,
       gim6010_driver::ErrorType::kEncoder, gim6010_driver::ErrorType::kController,

@@ -49,4 +49,15 @@ BusVoltageCurrent decodeBusVoltageCurrent(const std::uint8_t * data, std::size_t
   return result;
 }
 
+IqFeedback decodeIqFeedback(const std::uint8_t * data, std::size_t length)
+{
+  if (data == nullptr || length != 8U) {
+    throw std::invalid_argument("GIM6010 Iq response requires 8 bytes");
+  }
+  IqFeedback result;
+  std::memcpy(&result.setpoint, data, sizeof(float));
+  std::memcpy(&result.measured, data + sizeof(float), sizeof(float));
+  return result;
+}
+
 }  // namespace gim6010_driver

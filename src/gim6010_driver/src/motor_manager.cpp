@@ -95,6 +95,11 @@ bool MotorManager::poll(std::chrono::milliseconds timeout)
     entry->second->updateEncoderEstimates(frame.data.data(), frame.dlc);
     return true;
   }
+  if (command_id == Gim6010Motor::kCommandGetIq) {
+    if (frame.dlc != 8U || frame.remote) {++routing_statistics_.malformed_frames; return true;}
+    entry->second->updateIq(frame.data.data(), frame.dlc);
+    return true;
+  }
   if (command_id == Gim6010Motor::kCommandGetBusVoltageCurrent) {
     if (frame.dlc != 8U || frame.remote) {++routing_statistics_.malformed_frames; return true;}
     entry->second->updateBusVoltageCurrent(frame.data.data(), frame.dlc);

@@ -35,3 +35,13 @@ TEST(CanDiagnostics, DecodesBusVoltageAndCurrent)
   EXPECT_NEAR(bus.voltage, 24.003, 0.001);
   EXPECT_FLOAT_EQ(bus.current, 0.0F);
 }
+
+TEST(CanDiagnostics, DecodesIqSetpointAndMeasurement)
+{
+  const std::array<std::uint8_t, 8> data{{0x00, 0x00, 0xA0, 0x3F, 0x00, 0x00, 0x20, 0xC0}};
+  const auto iq = gim6010_driver::decodeIqFeedback(data.data(), data.size());
+  EXPECT_FLOAT_EQ(iq.setpoint, 1.25F);
+  EXPECT_FLOAT_EQ(iq.measured, -2.5F);
+  EXPECT_THROW(gim6010_driver::decodeIqFeedback(data.data(), 4U), std::invalid_argument);
+  EXPECT_THROW(gim6010_driver::decodeIqFeedback(nullptr, data.size()), std::invalid_argument);
+}

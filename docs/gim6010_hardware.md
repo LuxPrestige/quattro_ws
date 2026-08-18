@@ -63,7 +63,7 @@ include/gim6010_driver/
 - CAN Simple arbitration ID 생성
 - Direct Position (`0x00C`), Velocity (`0x00D`), Torque (`0x00E`) encode
 - MIT command encode/decode
-- heartbeat / encoder / bus telemetry decode
+- heartbeat / encoder / q-axis current / bus telemetry decode
 - GIM6010 motor abstraction
 - 한 CAN bus의 다중 motor routing
 
@@ -79,6 +79,7 @@ GDS68 매뉴얼 rev2.2 기준 CAN Simple은 11-bit standard frame이며 일반 p
 |---|---|---|
 | `0x008` MIT feedback | 출력축, rad / rad/s / N·m | 출력축 SI 값으로 사용 |
 | `0x009` Encoder Estimates | motor rotor, rev / rev/s | `2π / 8`을 곱해 출력축 rad / rad/s로 변환 |
+| `0x014` Get_Iq | motor current, A | setpoint과 measured q-axis current를 진단 항목으로 사용 |
 
 매뉴얼은 `0x009`가 secondary encoder 값이라고 명시하지 않는다. 현재 구현은 이를 primary motor encoder estimate로 취급한다. Secondary encoder 통신 이상은 encoder error의 `SEC_ENC_COM_FAIL (0x00000400)`로 진단한다. 실제 firmware에서 secondary encoder를 제어 피드백으로 선택했는지는 장치별 설정을 별도로 확인해야 한다.
 

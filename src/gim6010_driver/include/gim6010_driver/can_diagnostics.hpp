@@ -30,9 +30,16 @@ struct BusVoltageCurrent
   float current{0.0F};
 };
 
+struct IqFeedback
+{
+  float setpoint{0.0F};
+  float measured{0.0F};
+};
+
 Heartbeat decodeHeartbeat(const std::uint8_t * data, std::size_t length);
 std::uint64_t decodeError(const std::uint8_t * data, std::size_t length, ErrorType type);
 BusVoltageCurrent decodeBusVoltageCurrent(const std::uint8_t * data, std::size_t length);
+IqFeedback decodeIqFeedback(const std::uint8_t * data, std::size_t length);
 
 }  // namespace gim6010_driver
 

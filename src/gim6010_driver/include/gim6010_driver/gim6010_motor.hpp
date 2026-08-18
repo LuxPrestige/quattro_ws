@@ -29,6 +29,7 @@ public:
   static constexpr std::uint8_t kCommandEncoderEstimates = 0x09;
   static constexpr std::uint8_t kCommandSetControllerMode = 0x0B;
   static constexpr std::uint8_t kCommandSetLimits = 0x0F;
+  static constexpr std::uint8_t kCommandGetIq = 0x14;
   static constexpr std::uint8_t kCommandGetBusVoltageCurrent = 0x17;
   static constexpr std::uint8_t kCommandClearErrors = 0x18;
 
@@ -49,6 +50,7 @@ public:
   void disable();
   void requestEncoderEstimates();
   void requestError(ErrorType type);
+  void requestIq();
   void requestBusVoltageCurrent();
   void setPosition(
     float rotor_position_rev, float velocity_feedforward_rev_s = 0.0F,
@@ -58,6 +60,7 @@ public:
   void sendMitCommand(const MitCommand & command);
   void updateHeartbeat(const std::uint8_t * data, std::size_t length);
   void updateError(const std::uint8_t * data, std::size_t length);
+  void updateIq(const std::uint8_t * data, std::size_t length);
   void updateBusVoltageCurrent(const std::uint8_t * data, std::size_t length);
   void updateFeedback(const MitFeedback & feedback);
   void updateEncoderEstimates(const std::uint8_t * data, std::size_t length);
@@ -73,6 +76,8 @@ public:
   std::uint64_t missedHeartbeats() const noexcept;
   bool hasError(ErrorType type) const noexcept;
   std::uint64_t error(ErrorType type) const;
+  bool hasIq() const noexcept;
+  const IqFeedback & iq() const noexcept;
   bool hasBusVoltageCurrent() const noexcept;
   const BusVoltageCurrent & busVoltageCurrent() const noexcept;
   bool hasEncoderEstimates() const noexcept;
@@ -94,6 +99,8 @@ private:
   std::uint64_t missed_heartbeats_{0};
   std::optional<ErrorType> pending_error_type_;
   std::unordered_map<ErrorType, std::uint64_t> errors_;
+  IqFeedback iq_{};
+  bool has_iq_{false};
   BusVoltageCurrent bus_voltage_current_{};
   bool has_bus_voltage_current_{false};
   MitFeedback encoder_estimates_{};

@@ -69,7 +69,7 @@ private:
   bool waitForPreflightHeartbeats();
   bool waitForOperationalHeartbeats();
   void pollManagers();
-  void requestBusTelemetry();
+  void requestMotorTelemetry();
   void captureFaultDiagnostics();
   void publishDiagnostics(bool force = false);
   void safeStop() noexcept;

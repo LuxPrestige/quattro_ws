@@ -77,7 +77,7 @@ src/
 - Direct Position/Velocity/Torque 및 MIT command encode/decode
 - Position Filter/Trapezoidal input mode와 runtime controller gain 설정
 - heartbeat decode
-- error/voltage/current diagnostics
+- error/bus voltage/q-axis current diagnostics
 - encoder estimates
 - 단일 GIM6010 motor abstraction
 - 다중 motor routing
