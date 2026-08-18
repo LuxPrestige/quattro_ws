@@ -77,9 +77,9 @@ GIM6010-8 + GDS68 전용 저수준 C++ 드라이버.
 ```text
 Gim6010Motor / MotorManager
         ↓
-CAN Simple command routing
+CAN Simple direct/MIT command routing
         ↓
-MIT encode/decode
+Direct Position/Velocity/Torque 및 MIT encode/decode
         ↓
 SocketCAN
 ```
@@ -159,6 +159,8 @@ GDS68 / GIM6010-8
 | TF | `tf2_ros` / `geometry_msgs/msg/TransformStamped` |
 
 MIT 전용 Kp/Kd/feed-forward torque 값을 `JointState` 필드에 억지로 넣지 않는다.
+
+실기 기본 경로는 표준 `position` command interface와 GDS68 Direct Position이다. MIT를 선택할 때는 `position`, `velocity`, `kp`, `kd`, `effort` command interface를 모두 claim하는 전용 controller가 필요하며 일반 position controller 뒤에 숨기지 않는다.
 
 ## 5. 단위 규칙
 

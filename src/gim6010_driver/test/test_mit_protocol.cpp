@@ -39,3 +39,15 @@ TEST(MitProtocol, RejectsUnsafeInputInsteadOfClamping)
   command.position = std::numeric_limits<double>::quiet_NaN();
   EXPECT_THROW(gim6010_driver::encodeCommand(command), std::out_of_range);
 }
+
+TEST(MitProtocol, EncodesDocumentedMinimumAndMaximumBoundaries)
+{
+  const auto minimum = gim6010_driver::encodeCommand(
+    {-12.5, -65.0, 0.0, 0.0, -50.0});
+  EXPECT_EQ(minimum, (std::array<std::uint8_t, 8>{{0, 0, 0, 0, 0, 0, 0, 0}}));
+
+  const auto maximum = gim6010_driver::encodeCommand(
+    {12.5, 65.0, 500.0, 5.0, 50.0});
+  EXPECT_EQ(maximum, (std::array<std::uint8_t, 8>{{
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}));
+}

@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 add_library(${PROJECT_NAME} SHARED
   src/can_socket.cpp
   src/can_diagnostics.cpp
+  src/gds68_protocol.cpp
   src/mit_protocol.cpp
   src/gim6010_motor.cpp
   src/motor_manager.cpp)
@@ -18,9 +19,14 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
+add_executable(gim6010_diagnostic src/gim6010_diagnostic.cpp)
+target_compile_features(gim6010_diagnostic PUBLIC cxx_std_17)
+target_link_libraries(gim6010_diagnostic ${PROJECT_NAME})
+
 install(DIRECTORY include/ DESTINATION include)
 install(TARGETS ${PROJECT_NAME} EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+install(TARGETS gim6010_diagnostic DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -28,6 +34,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_mit_protocol ${PROJECT_NAME})
   ament_add_gtest(test_can_diagnostics test/test_can_diagnostics.cpp)
   target_link_libraries(test_can_diagnostics ${PROJECT_NAME})
+  ament_add_gtest(test_gds68_protocol test/test_gds68_protocol.cpp)
+  target_link_libraries(test_gds68_protocol ${PROJECT_NAME})
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

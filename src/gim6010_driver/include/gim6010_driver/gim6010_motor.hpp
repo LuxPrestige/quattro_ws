@@ -9,7 +9,9 @@
 
 #include "gim6010_driver/can_diagnostics.hpp"
 #include "gim6010_driver/can_socket.hpp"
+#include "gim6010_driver/gds68_protocol.hpp"
 #include "gim6010_driver/mit_protocol.hpp"
+#include "gim6010_driver/types.hpp"
 
 namespace gim6010_driver
 {
@@ -19,7 +21,7 @@ enum class AxisState : std::uint32_t { kIdle = 1, kClosedLoopControl = 8 };
 class Gim6010Motor
 {
 public:
-  static constexpr std::uint8_t kMaxNodeId = 63;
+  static constexpr std::uint8_t kMaxNodeId = kMaximumNodeId;
   static constexpr std::uint8_t kCommandHeartbeat = 0x01;
   static constexpr std::uint8_t kCommandGetError = 0x03;
   static constexpr std::uint8_t kCommandSetAxisState = 0x07;
@@ -36,13 +38,24 @@ public:
 
   void clearErrors();
   void setLimits(float velocity_limit, float current_limit);
-  void setMitMode();
+  void configurePositionControl(PositionInputMode input_mode);
+  void configureVelocityControl();
+  void configureTorqueControl();
+  void configureMitControl();
+  MotorControlMode controlMode() const noexcept;
+  void setPositionControlGains(const PositionControlGains & gains);
+  void setTrapezoidalTrajectoryLimits(const TrapezoidalTrajectoryLimits & limits);
   void enable();
   void disable();
   void requestEncoderEstimates();
   void requestError(ErrorType type);
   void requestBusVoltageCurrent();
-  void sendCommand(const MitCommand & command);
+  void setPosition(
+    float rotor_position_rev, float velocity_feedforward_rev_s = 0.0F,
+    float torque_feedforward_nm = 0.0F);
+  void setVelocity(float rotor_velocity_rev_s, float torque_feedforward_nm = 0.0F);
+  void setTorque(float motor_torque_nm);
+  void sendMitCommand(const MitCommand & command);
   void updateHeartbeat(const std::uint8_t * data, std::size_t length);
   void updateError(const std::uint8_t * data, std::size_t length);
   void updateBusVoltageCurrent(const std::uint8_t * data, std::size_t length);
@@ -51,9 +64,11 @@ public:
 
   bool hasFeedback() const noexcept;
   bool feedbackStale(std::chrono::steady_clock::duration timeout) const;
+  std::chrono::steady_clock::duration feedbackAge() const;
   const MitFeedback & feedback() const noexcept;
   bool hasHeartbeat() const noexcept;
   bool heartbeatStale(std::chrono::steady_clock::duration timeout) const;
+  std::chrono::steady_clock::duration heartbeatAge() const;
   const Heartbeat & heartbeat() const noexcept;
   std::uint64_t missedHeartbeats() const noexcept;
   bool hasError(ErrorType type) const noexcept;
@@ -85,6 +100,8 @@ private:
   std::chrono::steady_clock::time_point encoder_estimates_time_{};
   bool has_encoder_estimates_{false};
   double gear_ratio_{8.0};
+  MotorControlMode control_mode_{MotorControlMode::kUnconfigured};
+  std::optional<PositionInputMode> position_input_mode_;
 };
 
 }  // namespace gim6010_driver

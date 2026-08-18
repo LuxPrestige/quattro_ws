@@ -49,6 +49,24 @@ ros2 launch quattro_bringup hardware.launch.py \
   calibration_file:=/ws/src/quattro_bringup/config/calibration.yaml
 ```
 
+기본 제어 방식은 GDS68 Direct Position이다. MIT mode는 다섯 command interface를 모두 claim하는 전용 advanced controller가 필요하며 현재 기본 gait/trajectory controller와 연결하지 않는다. mode 값만 `mit`로 바꿔 일반 position controller를 사용하는 구성은 hardware mode switch에서 거부한다.
+
+Direct Velocity/Torque에서는 gait controller를 시작하지 않고 matching forward command controller를 선택한다.
+
+```bash
+# Direct Velocity
+ros2 launch quattro_bringup hardware.launch.py \
+  hardware_control_method:=direct_velocity \
+  controller_file:=/ws/src/quattro_bringup/config/hardware_controllers_velocity.yaml \
+  command_controller_name:=joint_command_controller
+
+# Direct Torque
+ros2 launch quattro_bringup hardware.launch.py \
+  hardware_control_method:=direct_torque \
+  controller_file:=/ws/src/quattro_bringup/config/hardware_controllers_torque.yaml \
+  command_controller_name:=joint_command_controller
+```
+
 선택 인자:
 
 ```bash
@@ -87,12 +105,15 @@ IMU와 joystick/teleop 노드는 조건에 따라 병렬로 시작한다.
 현재 하드웨어 계층은 활성화 과정에서 다음 원칙을 사용한다.
 
 1. CAN motor mapping 구성
-2. encoder feedback 확인
-3. motor enable
-4. 최신 motor position에서 hold
-5. Kp를 점진적으로 적용
-6. heartbeat와 closed-loop state 확인
-7. 상위 controller 사용 가능 상태로 전환
+2. encoder와 heartbeat 확인
+3. 기존 fault와 상세 오류 capture
+4. 현재 output position 확보
+5. Direct Position mode와 limit 설정
+6. 현재 위치 target을 enable 전에 준비
+7. motor enable
+8. 현재 위치 target 재송신
+9. fresh feedback과 closed-loop 확인
+10. 상위 position controller 사용 가능 상태로 전환
 
 한 모터라도 startup 조건을 만족하지 못하면 safe stop으로 전환한다.
 
@@ -107,6 +128,34 @@ initial_pose_duration = 5.0 s
 ```
 
 초기 자세 transition 로직을 변경할 때는 gait controller와 하드웨어 Safe Start를 별개의 단계로 유지한다.
+
+Quattro는 방식 A, 즉 `JointTrajectoryController`가 시간 기반 trajectory를 만들고 GDS68은 Direct Position target을 수행하는 구성을 사용한다. GDS68 internal trapezoidal trajectory를 동시에 사용하지 않아 두 계층의 shaping 중복을 피한다.
+
+## Read-only 단일 모터 확인
+
+다음 도구는 mode, gain, limit을 바꾸지 않고 enable, clear error, save configuration도 호출하지 않는다.
+
+```bash
+ros2 run gim6010_driver gim6010_diagnostic can0 0
+```
+
+heartbeat, rotor encoder를 8:1로 환산한 output position/velocity, detailed errors, bus voltage/current와 CAN error/drop 상태를 출력한다. 이 read-only 결과를 먼저 저장한 뒤에만 별도 수동 Position hold 시험을 계획한다.
+
+## 단일 모터 Position 시험 순서
+
+자동 movement 도구는 제공하지 않는다. 실제 시험은 로봇 지지와 전원 차단 수단을 준비하고 다음 단계마다 결과를 확인한다.
+
+1. `ip -details -statistics link show can0`
+2. read-only diagnostic으로 heartbeat/encoder/error/bus voltage 확인
+3. 대상 node만 연결했는지 확인
+4. Direct Position mode와 검증된 낮은 current/velocity limit 설정
+5. 현재 output position을 읽어 같은 위치를 target으로 준비
+6. closed-loop 진입 후 current-position hold 확인
+7. 사용자 명시 하에 작은 output angle step
+8. feedback 방향, current, fault 확인
+9. idle/disable
+
+단일 모터 hold와 작은 step이 검증되기 전에는 12축 시험을 하지 않는다.
 
 ## Teleop 시작 상태
 

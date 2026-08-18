@@ -35,6 +35,8 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kJogRadians = kPi / 180.0;
 constexpr auto kFeedbackTimeout = std::chrono::milliseconds{2000};
 constexpr auto kFeedbackRequestInterval = std::chrono::milliseconds{100};
+constexpr std::uint8_t kClosedLoopControl = 8;
+constexpr std::uint8_t kHeartbeatFaultMask = 0x0F;
 
 struct JointDefinition
 {
@@ -313,15 +315,15 @@ private:
       const auto can_interface = config["can_interface"].as<std::string>();
       const std::size_t bus_index = can_interface == "can0" ? 0U : 1U;
       auto & motor = *all_motors_[index];
-      motor.clearErrors();
       motor.setLimits(5.0F, 10.0F);
-      motor.setMitMode();
+      motor.configureMitControl();
       if (!waitForFeedback(motor, *all_managers_[bus_index])) {
         throw std::runtime_error(
                 std::string("No encoder feedback was received from ") + kJoints[index].name + ".");
       }
+      validatePreflight(motor, kJoints[index].name);
       all_targets_[index] = motor.encoderEstimates().position;
-      motor.sendCommand(
+      motor.sendMitCommand(
         {all_targets_[index], 0.0, config["kp"].as<double>(), config["kd"].as<double>(), 0.0});
     }
 
@@ -331,8 +333,9 @@ private:
       const std::size_t bus_index = can_interface == "can0" ? 0U : 1U;
       auto & motor = *all_motors_[index];
       motor.enable();
+      waitForClosedLoop(motor, *all_managers_[bus_index], kJoints[index].name);
       all_targets_[index] = refreshPosition(motor, *all_managers_[bus_index]);
-      motor.sendCommand(
+      motor.sendMitCommand(
         {all_targets_[index], 0.0, config["kp"].as<double>(), config["kd"].as<double>(), 0.0});
     }
 
@@ -367,18 +370,19 @@ private:
     manager_ = std::make_unique<gim6010_driver::MotorManager>(can_interface);
     manager_->addMotor(can_id);
     motor_ = &manager_->motor(can_id);
-    motor_->clearErrors();
     motor_->setLimits(5.0F, 10.0F);
-    motor_->setMitMode();
+    motor_->configureMitControl();
     if (!waitForFeedback()) {
       throw std::runtime_error("No encoder feedback was received from the selected motor.");
     }
+    validatePreflight(*motor_, kJoints[selected_index_].name);
 
     target_ = motor_->encoderEstimates().position;
-    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
     motor_->enable();
+    waitForClosedLoop(*motor_, *manager_, kJoints[selected_index_].name);
     target_ = refreshPosition();
-    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
     jog_degrees_ = 0;
     showProposedOffset(direction_ * target_);
     position_label_->setText(QString("Holding motor position at %1 rad; adjustment: 0 deg")
@@ -409,6 +413,38 @@ private:
       }
     }
     return false;
+  }
+
+  void validatePreflight(
+    const gim6010_driver::Gim6010Motor & motor, const std::string & name) const
+  {
+    if (!motor.hasHeartbeat() || motor.heartbeatStale(kFeedbackTimeout)) {
+      throw std::runtime_error(name + " has no fresh heartbeat.");
+    }
+    const auto & heartbeat = motor.heartbeat();
+    if (heartbeat.axis_error != 0U ||
+      (heartbeat.flags & kHeartbeatFaultMask) != 0U || heartbeat.axis_state != 1U)
+    {
+      throw std::runtime_error(name + " has a fault or is not idle; inspect errors before clear.");
+    }
+  }
+
+  void waitForClosedLoop(
+    gim6010_driver::Gim6010Motor & motor, gim6010_driver::MotorManager & manager,
+    const std::string & name)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + kFeedbackTimeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      manager.poll(std::chrono::milliseconds{20});
+      if (motor.hasHeartbeat() && !motor.heartbeatStale(kFeedbackTimeout)) {
+        const auto & heartbeat = motor.heartbeat();
+        if (heartbeat.axis_error != 0U || (heartbeat.flags & kHeartbeatFaultMask) != 0U) {
+          throw std::runtime_error(name + " reported a fault while entering closed loop.");
+        }
+        if (heartbeat.axis_state == kClosedLoopControl) {return;}
+      }
+    }
+    throw std::runtime_error(name + " did not enter closed-loop control.");
   }
 
   double refreshPosition()
@@ -442,7 +478,7 @@ private:
       throw std::runtime_error("Enable the selected motor before adjusting it.");
     }
     target_ += direction_ * joint_degrees * kJogRadians;
-    motor_->sendCommand({target_, 0.0, kp_, kd_, 0.0});
+    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
     if (all_motors_active_) {
       all_targets_[selected_index_] = target_;
     }

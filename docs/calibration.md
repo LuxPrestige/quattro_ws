@@ -97,14 +97,14 @@ ros2 run quattro_hardware calibration_gui \
 
 ## 현재 GUI 내부 안전값
 
-현재 `calibration_gui.cpp`는 캘리브레이션용으로 모터 limits를 다음 값으로 설정한다.
+현재 `calibration_gui.cpp`는 캘리브레이션용으로 GDS68의 rotor/current limits를 다음 값으로 설정한다.
 
 ```text
-velocity limit: 5.0
+rotor velocity limit: 5.0 rev/s
 current limit : 10.0
 ```
 
-이 값은 캘리브레이션 툴의 현재 구현값이며 실제 보행용 최종 gain/current 설정을 의미하지 않는다.
+이 값은 캘리브레이션 툴의 현재 구현값이며 실제 보행용 최종 gain/current 설정을 의미하지 않는다. GUI는 기존 fault 원인을 보존하기 위해 enable 전에 자동으로 오류를 삭제하지 않는다.
 
 ## 저장 내용
 
@@ -124,6 +124,8 @@ joints:
 ```
 
 CAN ID, bus, direction은 기준 매핑과 달라지면 GUI가 설정을 거부한다.
+
+`kp`와 `kd` 필드는 calibration GUI가 명시적으로 사용하는 MIT hold gain이며 일반 Position Control의 position/velocity PI gain이 아니다. runtime 기본 Position Control은 GUI와 동일한 `0x009` rotor estimate를 `2π/8`로 변환한 output position과 같은 direction/offset 식을 사용한다. Secondary encoder 전용 feedback이라고 가정하지 않는다.
 
 ## 완료 후 확인
 

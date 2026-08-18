@@ -72,8 +72,10 @@ src/
 
 - Linux SocketCAN RAII wrapper
 - standard CAN frame 송수신
+- CAN error frame 및 warning/passive/bus-off 진단
 - CAN Simple arbitration ID
-- MIT command encode/decode
+- Direct Position/Velocity/Torque 및 MIT command encode/decode
+- Position Filter/Trapezoidal input mode와 runtime controller gain 설정
 - heartbeat decode
 - error/voltage/current diagnostics
 - encoder estimates
@@ -87,7 +89,8 @@ src/
 - direction / offset 변환
 - Safe Start
 - 현재 위치 hold
-- Kp engagement
+- Direct Position enable 전 current-position target 준비
+- MIT 전용 5-command-interface와 Kp engagement
 - `read()` / `write()`
 - feedback timeout
 - heartbeat timeout
@@ -95,6 +98,7 @@ src/
 - fault diagnostics
 - safe stop
 - calibration GUI
+- read-only 단일 모터 diagnostic CLI
 
 ### `quattro_bringup`
 
@@ -110,7 +114,7 @@ src/
 
 - SteadyWin GIM6010-8 × 12
 - GDS68 + secondary encoder
-- CAN Simple / MIT Control
+- CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - `can0`: CAN ID 0~5
 - `can1`: CAN ID 6~11
 - 500 kbit/s
@@ -151,20 +155,21 @@ Motor left closed-loop control
 Motor fault details
 ```
 
-### 2. CAN error frame 진단 강화
+### 2. CAN error frame 실기 검증
 
-현재 SocketCAN 계층에서 physical CAN error를 상위 diagnostics로 충분히 전달하는지 추가 검증이 필요하다.
+SocketCAN 계층과 `/diagnostics` 전달은 구현됐지만 실제 두 CAN bus에서 fault injection 검증이 필요하다.
 
 필요 항목:
 
-- error frame 수집
-- bus-off / error-passive 구분
-- TX/RX error counter 기록
+- error-warning / error-passive / bus-off fault injection
+- kernel 및 CAN adapter별 error frame 지원 확인
 - stale feedback과 CAN physical error 구분
 
 ### 3. gain / current limit 실기 검증
 
 현재 gain과 current limit은 코드에 존재하지만 최종 안전값으로 확정된 상태가 아니다.
+
+일반 Position gain 자동 적용은 기본적으로 꺼져 있어 장치 값을 보존한다. 문서의 `20.0/0.16/0.32`는 제조사 tuning 예시이며 factory default로 확인된 값이 아니다.
 
 필요 항목:
 

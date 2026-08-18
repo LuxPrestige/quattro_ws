@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <limits>
 
 namespace gim6010_driver
 {
@@ -36,7 +37,7 @@ std::uint8_t Gim6010Motor::nodeId() const noexcept {return node_id_;}
 std::uint32_t Gim6010Motor::arbitrationId(std::uint8_t command_id) const
 {
   if (command_id > 0x1F) {throw std::invalid_argument("CAN Simple command ID must be 0..31");}
-  return (static_cast<std::uint32_t>(node_id_) << 5) | command_id;
+  return makeArbitrationId(node_id_, static_cast<Gds68Command>(command_id));
 }
 
 void Gim6010Motor::sendRaw(
@@ -56,8 +57,9 @@ void Gim6010Motor::sendRaw(
 void Gim6010Motor::clearErrors() {sendRaw(kCommandClearErrors, nullptr, 0);}
 void Gim6010Motor::setLimits(float velocity_limit, float current_limit)
 {
-  if (!(velocity_limit > 0.0F) || !(current_limit > 0.0F)) {
-    throw std::invalid_argument("motor limits must be positive");
+  if (!(velocity_limit > 0.0F) || !(current_limit > 0.0F) || current_limit > 100.0F) {
+    throw std::invalid_argument(
+            "motor limits must be positive and current must not exceed the GDS68 100 A limit");
   }
   std::array<std::uint8_t, 8> payload{};
   const auto velocity = littleEndianBytes(velocity_limit);
@@ -66,16 +68,74 @@ void Gim6010Motor::setLimits(float velocity_limit, float current_limit)
   std::copy(current.begin(), current.end(), payload.begin() + 4);
   sendRaw(kCommandSetLimits, payload.data(), payload.size());
 }
-void Gim6010Motor::setMitMode()
+void Gim6010Motor::configureMitControl()
 {
-  constexpr std::uint32_t control_mode_position = 3;
-  constexpr std::uint32_t input_mode_mit = 9;
-  std::array<std::uint8_t, 8> payload{};
-  const auto control = littleEndianBytes(control_mode_position);
-  const auto input = littleEndianBytes(input_mode_mit);
-  std::copy(control.begin(), control.end(), payload.begin());
-  std::copy(input.begin(), input.end(), payload.begin() + 4);
+  const auto payload = encodeControllerMode(ControlMode::kPosition, InputMode::kMit);
   sendRaw(kCommandSetControllerMode, payload.data(), payload.size());
+  control_mode_ = MotorControlMode::kMit;
+  position_input_mode_.reset();
+}
+void Gim6010Motor::configurePositionControl(PositionInputMode input_mode)
+{
+  InputMode protocol_input;
+  switch (input_mode) {
+    case PositionInputMode::kDirect: protocol_input = InputMode::kDirect; break;
+    case PositionInputMode::kPositionFilter: protocol_input = InputMode::kPositionFilter; break;
+    case PositionInputMode::kTrapezoidalTrajectory:
+      protocol_input = InputMode::kTrapezoidalTrajectory;
+      break;
+  }
+  const auto payload = encodeControllerMode(ControlMode::kPosition, protocol_input);
+  sendRaw(kCommandSetControllerMode, payload.data(), payload.size());
+  control_mode_ = MotorControlMode::kPosition;
+  position_input_mode_ = input_mode;
+}
+void Gim6010Motor::configureVelocityControl()
+{
+  const auto payload = encodeControllerMode(ControlMode::kVelocity, InputMode::kDirect);
+  sendRaw(kCommandSetControllerMode, payload.data(), payload.size());
+  control_mode_ = MotorControlMode::kVelocity;
+  position_input_mode_.reset();
+}
+void Gim6010Motor::configureTorqueControl()
+{
+  const auto payload = encodeControllerMode(ControlMode::kTorque, InputMode::kDirect);
+  sendRaw(kCommandSetControllerMode, payload.data(), payload.size());
+  control_mode_ = MotorControlMode::kTorque;
+  position_input_mode_.reset();
+}
+MotorControlMode Gim6010Motor::controlMode() const noexcept {return control_mode_;}
+void Gim6010Motor::setPositionControlGains(const PositionControlGains & gains)
+{
+  if (control_mode_ != MotorControlMode::kPosition) {
+    throw std::logic_error("position controller gains require configured position mode");
+  }
+  const auto position = encodePositionGain(static_cast<float>(gains.position_gain));
+  const auto velocity = encodeVelocityGains(
+    static_cast<float>(gains.velocity_gain),
+    static_cast<float>(gains.velocity_integrator_gain));
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetPositionGain),
+    position.data(), position.size());
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetVelocityGains),
+    velocity.data(), velocity.size());
+}
+void Gim6010Motor::setTrapezoidalTrajectoryLimits(
+  const TrapezoidalTrajectoryLimits & limits)
+{
+  if (control_mode_ != MotorControlMode::kPosition ||
+    position_input_mode_ != PositionInputMode::kTrapezoidalTrajectory)
+  {
+    throw std::logic_error("trajectory limits require trapezoidal position mode");
+  }
+  const auto velocity = encodeTrajectoryVelocityLimit(
+    static_cast<float>(limits.velocity_rev_s));
+  const auto acceleration = encodeTrajectoryAccelerationLimits(
+    static_cast<float>(limits.acceleration_rev_s2),
+    static_cast<float>(limits.deceleration_rev_s2));
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetTrajectoryVelocityLimit),
+    velocity.data(), velocity.size());
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetTrajectoryAccelerationLimits),
+    acceleration.data(), acceleration.size());
 }
 void Gim6010Motor::enable()
 {
@@ -87,7 +147,11 @@ void Gim6010Motor::disable()
   const auto payload = littleEndianBytes(static_cast<std::uint32_t>(AxisState::kIdle));
   sendRaw(kCommandSetAxisState, payload.data(), payload.size());
 }
-void Gim6010Motor::requestEncoderEstimates() {sendRaw(kCommandEncoderEstimates, nullptr, 0, true);}
+void Gim6010Motor::requestEncoderEstimates()
+{
+  has_encoder_estimates_ = false;
+  sendRaw(kCommandEncoderEstimates, nullptr, 0, true);
+}
 void Gim6010Motor::requestError(ErrorType type)
 {
   const auto value = static_cast<std::uint8_t>(type);
@@ -100,10 +164,37 @@ void Gim6010Motor::requestBusVoltageCurrent()
   has_bus_voltage_current_ = false;
   sendRaw(kCommandGetBusVoltageCurrent, nullptr, 0, true);
 }
-void Gim6010Motor::sendCommand(const MitCommand & command)
+void Gim6010Motor::sendMitCommand(const MitCommand & command)
 {
+  if (control_mode_ != MotorControlMode::kMit) {
+    throw std::logic_error("MIT command requires configured MIT control mode");
+  }
   const auto payload = encodeCommand(command);
   sendRaw(kCommandMitControl, payload.data(), payload.size());
+}
+void Gim6010Motor::setPosition(float position, float velocity_ff, float torque_ff)
+{
+  if (control_mode_ != MotorControlMode::kPosition) {
+    throw std::logic_error("position command requires configured position control mode");
+  }
+  const auto payload = encodeDirectPosition(position, velocity_ff, torque_ff);
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetInputPosition), payload.data(), payload.size());
+}
+void Gim6010Motor::setVelocity(float velocity, float torque_ff)
+{
+  if (control_mode_ != MotorControlMode::kVelocity) {
+    throw std::logic_error("velocity command requires configured velocity control mode");
+  }
+  const auto payload = encodeDirectVelocity(velocity, torque_ff);
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetInputVelocity), payload.data(), payload.size());
+}
+void Gim6010Motor::setTorque(float torque)
+{
+  if (control_mode_ != MotorControlMode::kTorque) {
+    throw std::logic_error("torque command requires configured torque control mode");
+  }
+  const auto payload = encodeDirectTorque(torque);
+  sendRaw(static_cast<std::uint8_t>(Gds68Command::kSetInputTorque), payload.data(), payload.size());
 }
 void Gim6010Motor::updateHeartbeat(const std::uint8_t * data, std::size_t length)
 {
@@ -148,7 +239,8 @@ void Gim6010Motor::updateEncoderEstimates(const std::uint8_t * data, std::size_t
   constexpr double two_pi = 6.28318530717958647692;
   encoder_estimates_ = MitFeedback{
     node_id_, position_turns * two_pi / gear_ratio_,
-    velocity_turns_per_second * two_pi / gear_ratio_, 0.0};
+    velocity_turns_per_second * two_pi / gear_ratio_,
+    std::numeric_limits<double>::quiet_NaN()};
   encoder_estimates_time_ = std::chrono::steady_clock::now();
   has_encoder_estimates_ = true;
   feedback_ = encoder_estimates_;
@@ -160,11 +252,21 @@ bool Gim6010Motor::feedbackStale(std::chrono::steady_clock::duration timeout) co
 {
   return !has_feedback_ || std::chrono::steady_clock::now() - feedback_time_ > timeout;
 }
+std::chrono::steady_clock::duration Gim6010Motor::feedbackAge() const
+{
+  return has_feedback_ ? std::chrono::steady_clock::now() - feedback_time_ :
+         std::chrono::steady_clock::duration::max();
+}
 const MitFeedback & Gim6010Motor::feedback() const noexcept {return feedback_;}
 bool Gim6010Motor::hasHeartbeat() const noexcept {return has_heartbeat_;}
 bool Gim6010Motor::heartbeatStale(std::chrono::steady_clock::duration timeout) const
 {
   return !has_heartbeat_ || std::chrono::steady_clock::now() - heartbeat_time_ > timeout;
+}
+std::chrono::steady_clock::duration Gim6010Motor::heartbeatAge() const
+{
+  return has_heartbeat_ ? std::chrono::steady_clock::now() - heartbeat_time_ :
+         std::chrono::steady_clock::duration::max();
 }
 const Heartbeat & Gim6010Motor::heartbeat() const noexcept {return heartbeat_;}
 std::uint64_t Gim6010Motor::missedHeartbeats() const noexcept {return missed_heartbeats_;}

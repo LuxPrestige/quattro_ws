@@ -1,21 +1,15 @@
 #ifndef GIM6010_DRIVER__CAN_SOCKET_HPP_
 #define GIM6010_DRIVER__CAN_SOCKET_HPP_
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
+
+#include "gim6010_driver/can_frame.hpp"
 
 namespace gim6010_driver
 {
-
-struct CanFrame
-{
-  std::uint32_t id{0};
-  std::uint8_t dlc{0};
-  std::array<std::uint8_t, 8> data{};
-  bool remote{false};
-};
 
 class CanSocket
 {
@@ -34,6 +28,7 @@ public:
   const std::string & interfaceName() const noexcept;
   void send(const CanFrame & frame) const;
   bool receive(CanFrame & frame, std::chrono::milliseconds timeout) const;
+  void setStandardFilters(const std::vector<std::uint32_t> & ids);
 
 private:
   int fd_{-1};

@@ -10,6 +10,7 @@ from launch.substitutions import (
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -23,6 +24,13 @@ def generate_launch_description() -> LaunchDescription:
     initial_pose_duration = LaunchConfiguration('initial_pose_duration')
     calibration_file = LaunchConfiguration('calibration_file')
     controller_file = LaunchConfiguration('controller_file')
+    hardware_control_method = LaunchConfiguration('hardware_control_method')
+    command_controller_name = LaunchConfiguration('command_controller_name')
+    apply_position_gains = LaunchConfiguration('apply_position_gains')
+    position_gain = LaunchConfiguration('position_gain')
+    velocity_gain = LaunchConfiguration('velocity_gain')
+    velocity_integrator_gain = LaunchConfiguration(
+        'velocity_integrator_gain')
 
     bringup_share = FindPackageShare('quattro_bringup')
     description_share = FindPackageShare('quattro_description')
@@ -41,6 +49,11 @@ def generate_launch_description() -> LaunchDescription:
                 FindExecutable(name='xacro'), ' ', xacro_file,
                 ' simulation:=false',
                 ' calibration_file:=', calibration_file,
+                ' hardware_control_method:=', hardware_control_method,
+                ' apply_position_gains:=', apply_position_gains,
+                ' position_gain:=', position_gain,
+                ' velocity_gain:=', velocity_gain,
+                ' velocity_integrator_gain:=', velocity_integrator_gain,
             ]),
             value_type=str,
         )
@@ -88,7 +101,7 @@ def generate_launch_description() -> LaunchDescription:
         package='controller_manager',
         executable='spawner',
         arguments=[
-            'joint_trajectory_controller',
+            command_controller_name,
             '--controller-manager', '/controller_manager',
             '--controller-manager-timeout', '30',
             '--switch-timeout', '30',
@@ -109,6 +122,10 @@ def generate_launch_description() -> LaunchDescription:
                 'use_sim_time': False,
             },
         ],
+        condition=IfCondition(PythonExpression([
+            "'", hardware_control_method,
+            "' == 'direct_position'",
+        ])),
     )
     imu = Node(
         package='quattro_sensors',
@@ -169,6 +186,30 @@ def generate_launch_description() -> LaunchDescription:
             default_value=PathJoinSubstitution([
                 bringup_share, 'config', 'calibration.yaml']),
             description='Machine-specific motor calibration YAML.'),
+        DeclareLaunchArgument(
+            'hardware_control_method', default_value='direct_position',
+            description=(
+                'GDS68 control method: direct_position, direct_velocity, '
+                'direct_torque, or mit. The controller file must use the '
+                'matching command interface.')),
+        DeclareLaunchArgument(
+            'apply_position_gains', default_value='false',
+            description=(
+                'Write runtime GDS68 position/velocity gains during configure. '
+                'False preserves the device values.')),
+        DeclareLaunchArgument(
+            'position_gain', default_value='0.0',
+            description='GDS68 position gain; used only when enabled.'),
+        DeclareLaunchArgument(
+            'velocity_gain', default_value='0.0',
+            description='GDS68 velocity gain; used only when enabled.'),
+        DeclareLaunchArgument(
+            'velocity_integrator_gain', default_value='0.0',
+            description='GDS68 velocity integrator gain; used only when enabled.'),
+        DeclareLaunchArgument(
+            'command_controller_name',
+            default_value='joint_trajectory_controller',
+            description='Controller name present in controller_file.'),
         DeclareLaunchArgument(
             'controller_file',
             default_value=PathJoinSubstitution([

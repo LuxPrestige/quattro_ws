@@ -13,7 +13,7 @@
 - SBC: Raspberry Pi 5
 - 액추에이터: SteadyWin GIM6010-8 × 12
 - 드라이버: GDS68 + secondary encoder
-- 모터 통신: Linux SocketCAN / CAN Simple / MIT Control
+- 모터 통신: Linux SocketCAN / CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - 기본 CAN bitrate: `500000`
 - IMU: BNO085
 - 시뮬레이션: Gazebo Harmonic + `gz_ros2_control`

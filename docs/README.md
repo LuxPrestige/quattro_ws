@@ -11,10 +11,11 @@
 | `architecture.md` | 패키지 책임, 의존 방향, ROS 인터페이스, SI 단위, REP-103, 이름 규칙 |
 | `development_environment.md` | Docker, X11, Raspberry Pi, NVIDIA GPU, 빌드, Git 작업 방식 |
 | `gazebo.md` | Gazebo Harmonic, `gz_ros2_control`, launch 흐름, 시뮬레이션 검증 |
-| `gim6010_hardware.md` | GIM6010-8 + GDS68, CAN 매핑, CAN Simple/MIT 계층, `ros2_control`, 안전 규칙 |
+| `gim6010_hardware.md` | GIM6010-8 + GDS68, CAN 매핑, Direct/MIT 제어, `ros2_control`, 안전 규칙 |
 | `calibration.md` | 실제 관절 zero offset 캘리브레이션 절차 |
 | `hardware_bringup.md` | 실제 로봇 bringup과 실행 전 안전 확인 |
 | `development_status.md` | 현재 구현 상태, 미검증 항목, 다음 개발 순서 |
+| `gim6010_audit.md` | GDS68 매뉴얼 대조 감사 결과, 수정 사항, 남은 실기 검증 게이트 |
 | `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` | 제조사 매뉴얼 한국어 번역본 |
 
 ## 문서 작성 원칙

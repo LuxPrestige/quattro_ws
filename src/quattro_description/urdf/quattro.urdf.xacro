@@ -5,12 +5,18 @@
     name="calibration_file"
     default="../config/calibration.yaml"/>
   <xacro:arg name="simulation" default="false"/>
+  <xacro:arg name="hardware_control_method" default="direct_position"/>
+  <xacro:arg name="apply_position_gains" default="false"/>
+  <xacro:arg name="position_gain" default="0.0"/>
+  <xacro:arg name="velocity_gain" default="0.0"/>
+  <xacro:arg name="velocity_integrator_gain" default="0.0"/>
   <xacro:arg
     name="simulation_controllers"
     default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
   <xacro:property
     name="hardware_calibration"
     value="${xacro.load_yaml('$(arg calibration_file)')['joints']}"/>
+  <xacro:property name="hardware_control_method" value="$(arg hardware_control_method)"/>
 
   <!--
     Mesh directory:
@@ -52,10 +58,31 @@
 
   <xacro:macro name="quattro_hardware_joint" params="name lower upper">
     <joint name="${name}">
-      <command_interface name="position">
-        <param name="min">${lower}</param>
-        <param name="max">${upper}</param>
-      </command_interface>
+      <xacro:if value="${hardware_control_method == 'direct_position'}">
+        <command_interface name="position">
+          <param name="min">${lower}</param>
+          <param name="max">${upper}</param>
+        </command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_control_method == 'mit'}">
+        <command_interface name="position"><param name="min">${lower}</param><param name="max">${upper}</param></command_interface>
+        <command_interface name="velocity"><param name="min">-4.0</param><param name="max">4.0</param></command_interface>
+        <command_interface name="kp"><param name="min">0.0</param><param name="max">500.0</param></command_interface>
+        <command_interface name="kd"><param name="min">0.0</param><param name="max">5.0</param></command_interface>
+        <command_interface name="effort"><param name="min">-10.0</param><param name="max">10.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_control_method == 'direct_velocity'}">
+        <command_interface name="velocity">
+          <param name="min">-4.0</param>
+          <param name="max">4.0</param>
+        </command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_control_method == 'direct_torque'}">
+        <command_interface name="effort">
+          <param name="min">-10.0</param>
+          <param name="max">10.0</param>
+        </command_interface>
+      </xacro:if>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
@@ -63,8 +90,9 @@
       <param name="can_id">${hardware_calibration[name]['can_id']}</param>
       <param name="direction">${hardware_calibration[name]['direction']}</param>
       <param name="offset">${hardware_calibration[name]['offset']}</param>
-      <param name="kp">${hardware_calibration[name]['kp']}</param>
-      <param name="kd">${hardware_calibration[name]['kd']}</param>
+      <param name="gear_ratio">8.0</param>
+      <param name="mit_kp">${hardware_calibration[name]['kp']}</param>
+      <param name="mit_kd">${hardware_calibration[name]['kd']}</param>
     </joint>
   </xacro:macro>
 
@@ -496,12 +524,18 @@
     <ros2_control name="QuattroSystem" type="system">
       <hardware>
         <plugin>quattro_hardware/QuattroSystem</plugin>
-        <param name="feedback_timeout_ms">100</param>
-        <param name="heartbeat_timeout_ms">300</param>
+        <param name="control_method">${hardware_control_method}</param>
+        <param name="apply_position_gains">$(arg apply_position_gains)</param>
+        <param name="position_gain">$(arg position_gain)</param>
+        <param name="velocity_gain">$(arg velocity_gain)</param>
+        <param name="velocity_integrator_gain">$(arg velocity_integrator_gain)</param>
+        <param name="feedback_timeout_ms">150</param>
+        <param name="heartbeat_timeout_ms">400</param>
         <param name="startup_timeout_ms">1000</param>
-        <param name="command_timeout_ms">100</param>
-        <param name="motor_velocity_limit">50.0</param>
-        <param name="motor_current_limit">20.0</param>
+        <param name="command_timeout_ms">250</param>
+        <param name="scheduling_warning_ms">50</param>
+        <param name="rotor_velocity_limit_rev_s">5.0</param>
+        <param name="motor_current_limit_a">5.0</param>
         <param name="engagement_duration_ms">1000</param>
         <param name="telemetry_period_ms">500</param>
       </hardware>
