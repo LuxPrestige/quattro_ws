@@ -14,10 +14,21 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Bool, Float64
 from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+
+def ramp_value(
+        current: float, target: float, rate: float, dt: float) -> float:
+    """Move one command value toward its target at a bounded rate."""
+    difference = target - current
+    step = rate * dt
+    if abs(difference) <= step:
+        return target
+    return current + math.copysign(step, difference)
 
 
 class GaitController(Node):
@@ -43,6 +54,8 @@ class GaitController(Node):
             'command_timeout', 0.5).value)
         self._velocity_ramp_rate = float(self.declare_parameter(
             'velocity_ramp_rate', 0.5).value)
+        self._stop_ramp_rate = float(self.declare_parameter(
+            'stop_ramp_rate', 0.3).value)
         self._initial_pose_duration = float(self.declare_parameter(
             'initial_pose_duration', 5.0).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
@@ -53,9 +66,11 @@ class GaitController(Node):
         self._pid_limit = float(self.declare_parameter(
             'pose_pid.integral_limit', 0.5).value)
         if (self._control_frequency <= 0.0 or self._command_timeout <= 0.0 or
+                self._velocity_ramp_rate <= 0.0 or
+                self._stop_ramp_rate <= 0.0 or
                 self._initial_pose_duration <= 0.0):
             raise ValueError(
-                'control_frequency, command_timeout, and '
+                'control_frequency, command_timeout, ramp rates, and '
                 'initial_pose_duration must be positive')
 
         geometry = RobotGeometry(**geometry_values)
@@ -86,7 +101,8 @@ class GaitController(Node):
         self.create_subscription(
             JointState, 'joint_states', self._on_joint_state, 10)
         self.create_subscription(PoseStamped, 'body_pose', self._on_pose, 10)
-        self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
+        self.create_subscription(
+            Imu, 'imu/data', self._on_imu, qos_profile_sensor_data)
         self.create_subscription(Bool, 'estop', self._on_estop, 10)
         self.create_subscription(Bool, 'imu_auto', self._on_imu_auto, 10)
         self.create_subscription(
@@ -204,13 +220,6 @@ class GaitController(Node):
             self._body_rpy[2],
         )
 
-    def _ramp(self, current: float, target: float, dt: float) -> float:
-        difference = target - current
-        step = self._velocity_ramp_rate * dt
-        if abs(difference) <= step:
-            return target
-        return current + math.copysign(step, difference)
-
     def _update(self) -> None:
         if not self._output_enabled:
             return
@@ -232,14 +241,14 @@ class GaitController(Node):
                 self._command.linear.y,
                 self._command.angular.z,
             )
-            if all(abs(target) <= 1.0e-6 for target in targets):
-                self._smoothed_velocity = [0.0, 0.0, 0.0]
-            else:
-                dt = 1.0 / self._control_frequency
-                self._smoothed_velocity = [
-                    self._ramp(current, target, dt)
-                    for current, target in zip(self._smoothed_velocity, targets)
-                ]
+            stopping = all(abs(target) <= 1.0e-6 for target in targets)
+            ramp_rate = (self._stop_ramp_rate if stopping
+                         else self._velocity_ramp_rate)
+            dt = 1.0 / self._control_frequency
+            self._smoothed_velocity = [
+                ramp_value(current, target, ramp_rate, dt)
+                for current, target in zip(self._smoothed_velocity, targets)
+            ]
         velocity = tuple(self._smoothed_velocity[:2])
         yaw_rate = self._smoothed_velocity[2]
 

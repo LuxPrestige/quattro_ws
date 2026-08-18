@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from quattro.gait import GaitGenerator, GaitParameters
+from quattro.gait_controller import ramp_value
 from quattro.kinematics import LEG_NAMES, QuadrupedKinematics
 
 
@@ -133,3 +134,16 @@ def test_velocity_above_limit_is_rejected():
 
     with pytest.raises(ValueError):
         generator.update(0.01, (1.0, 0.0))
+
+
+def test_stop_ramp_reduces_command_without_crossing_zero():
+    value = 0.1
+    samples = []
+    for _ in range(40):
+        value = ramp_value(value, 0.0, rate=0.3, dt=0.01)
+        samples.append(value)
+
+    assert samples[0] == pytest.approx(0.097)
+    assert all(next_value <= current
+               for current, next_value in zip(samples, samples[1:]))
+    assert samples[-1] == 0.0

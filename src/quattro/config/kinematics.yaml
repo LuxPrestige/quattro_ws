@@ -33,6 +33,7 @@ gait_controller:
     start_enabled: true
     command_timeout: 0.50
     velocity_ramp_rate: 0.5
+    stop_ramp_rate: 0.3
     pose_pid:
       kp: 1.5
       ki: 0.1

@@ -1,8 +1,10 @@
 #include "quattro_hardware/quattro_system.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <unordered_set>
@@ -16,6 +18,32 @@ namespace quattro_hardware
 namespace
 {
 constexpr auto kConfigureFrameInterval = std::chrono::milliseconds{2};
+constexpr std::uint8_t kClosedLoopControl = 8;
+
+std::string hexValue(std::uint64_t value)
+{
+  std::ostringstream stream;
+  stream << "0x" << std::hex << std::uppercase << value;
+  return stream.str();
+}
+
+diagnostic_msgs::msg::KeyValue diagnosticValue(
+  const std::string & key, const std::string & value)
+{
+  diagnostic_msgs::msg::KeyValue result;
+  result.key = key;
+  result.value = value;
+  return result;
+}
+
+std::string systemErrorName(std::uint64_t value)
+{
+  if ((value & 0x02U) != 0U) {return "DC_BUS_UNDER_VOLTAGE";}
+  if ((value & 0x04U) != 0U) {return "DC_BUS_OVER_VOLTAGE";}
+  if ((value & 0x08U) != 0U) {return "DC_BUS_OVER_REGEN_CURRENT";}
+  if ((value & 0x10U) != 0U) {return "DC_BUS_OVER_CURRENT";}
+  return value == 0U ? "OK" : "UNKNOWN_SYSTEM_ERROR";
+}
 
 double parameterDouble(
   const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
@@ -54,13 +82,16 @@ hardware_interface::CallbackReturn QuattroSystem::on_init(
     const auto & hp = params.hardware_info.hardware_parameters;
     const auto default_bus = parameterString(hp, "can_interface", "can0");
     feedback_timeout_ = std::chrono::milliseconds(parameterLong(hp, "feedback_timeout_ms", 100));
+    heartbeat_timeout_ = std::chrono::milliseconds(parameterLong(hp, "heartbeat_timeout_ms", 300));
     startup_timeout_ = std::chrono::milliseconds(parameterLong(hp, "startup_timeout_ms", 1000));
     command_timeout_ = std::chrono::milliseconds(parameterLong(hp, "command_timeout_ms", 100));
     motor_velocity_limit_ = parameterDouble(hp, "motor_velocity_limit", 50.0);
     motor_current_limit_ = parameterDouble(hp, "motor_current_limit", 20.0);
     engagement_duration_ = std::chrono::milliseconds(
       parameterLong(hp, "engagement_duration_ms", 1000));
-    if (feedback_timeout_.count() <= 0 || startup_timeout_.count() <= 0 ||
+    telemetry_period_ = std::chrono::milliseconds(parameterLong(hp, "telemetry_period_ms", 500));
+    if (feedback_timeout_.count() <= 0 || heartbeat_timeout_.count() <= 0 ||
+      startup_timeout_.count() <= 0 || telemetry_period_.count() <= 0 ||
       command_timeout_.count() <= 0 || motor_velocity_limit_ <= 0.0 ||
       motor_current_limit_ <= 0.0 || engagement_duration_.count() <= 0)
     {
@@ -116,6 +147,8 @@ hardware_interface::CallbackReturn QuattroSystem::on_init(
       joints_.push_back(joint);
     }
     if (joints_.empty()) {throw std::invalid_argument("no joints configured");}
+    diagnostics_publisher_ = get_node()->create_publisher<
+      diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Invalid Quattro hardware configuration: %s", error.what());
     return hardware_interface::CallbackReturn::ERROR;
@@ -146,10 +179,7 @@ bool QuattroSystem::waitForInitialFeedback()
 {
   const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
   while (std::chrono::steady_clock::now() < deadline) {
-    for (auto & manager : managers_) {
-      while (manager.second->poll(std::chrono::milliseconds{0})) {
-      }
-    }
+    pollManagers();
     const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
           const auto & motor = joint.manager->motor(joint.node_id);
           return motor.hasFeedback() && !motor.feedbackStale(feedback_timeout_);
@@ -173,6 +203,46 @@ bool QuattroSystem::waitForInitialFeedback()
         joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
         motor.hasFeedback() ? "yes (stale)" : "no");
     }
+  }
+  return false;
+}
+
+void QuattroSystem::pollManagers()
+{
+  for (auto & manager : managers_) {
+    while (manager.second->poll(std::chrono::milliseconds{0})) {
+    }
+  }
+}
+
+bool QuattroSystem::waitForOperationalHeartbeats()
+{
+  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
+  while (std::chrono::steady_clock::now() < deadline) {
+    pollManagers();
+    const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
+          const auto & motor = joint.manager->motor(joint.node_id);
+          return motor.hasHeartbeat() && !motor.heartbeatStale(heartbeat_timeout_) &&
+                 motor.heartbeat().axis_error == 0U &&
+                 motor.heartbeat().axis_state == kClosedLoopControl;
+    });
+    if (ready) {return true;}
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  }
+  for (const auto & joint : joints_) {
+    const auto & motor = joint.manager->motor(joint.node_id);
+    if (!motor.hasHeartbeat()) {
+      RCLCPP_ERROR(get_logger(), "Missing heartbeat from %s", joint.name.c_str());
+      continue;
+    }
+    const auto & heartbeat = motor.heartbeat();
+    RCLCPP_ERROR(
+      get_logger(),
+      "Motor not operational: joint=%s interface=%s can_id=%u axis_error=%s "
+      "axis_state=%u flags=%s life=%u",
+      joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
+      hexValue(heartbeat.axis_error).c_str(), static_cast<unsigned>(heartbeat.axis_state),
+      hexValue(heartbeat.flags).c_str(), static_cast<unsigned>(heartbeat.life));
   }
   return false;
 }
@@ -220,6 +290,9 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
       throw std::runtime_error(
               "not all enabled motors supplied fresh 0x08 or 0x09 feedback");
     }
+    if (!waitForOperationalHeartbeats()) {
+      throw std::runtime_error("not all motors entered closed-loop control without errors");
+    }
 
     constexpr auto control_period = std::chrono::milliseconds{10};
 
@@ -229,10 +302,7 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
         motor.sendCommand({motor.feedback().position, 0.0, 0.0, joint.kd, 0.0});
       }
       std::this_thread::sleep_for(control_period);
-      for (auto & manager : managers_) {
-        while (manager.second->poll(std::chrono::milliseconds{0})) {
-        }
-      }
+      pollManagers();
     }
 
     std::vector<double> hold_positions;
@@ -259,8 +329,12 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
       }
       next_cycle += control_period;
       std::this_thread::sleep_until(next_cycle);
-      for (auto & manager : managers_) {
-        while (manager.second->poll(std::chrono::milliseconds{0})) {
+      pollManagers();
+      for (const auto & joint : joints_) {
+        const auto & heartbeat = joint.manager->motor(joint.node_id).heartbeat();
+        if (heartbeat.axis_error != 0U || heartbeat.axis_state != kClosedLoopControl) {
+          throw std::runtime_error(
+                  joint.name + " left closed-loop control during gain engagement");
         }
       }
     }
@@ -276,6 +350,8 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
       set_command(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
     }
     last_write_ = std::chrono::steady_clock::now();
+    next_telemetry_request_ = last_write_;
+    next_diagnostics_publish_ = last_write_;
     position_limits_enabled_ = false;
     active_ = true;
     RCLCPP_INFO(
@@ -285,6 +361,8 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Safe Start activation failed: %s", error.what());
     safeStop();
+    captureFaultDiagnostics();
+    publishDiagnostics(true);
     return hardware_interface::CallbackReturn::ERROR;
   }
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -302,19 +380,169 @@ hardware_interface::CallbackReturn QuattroSystem::on_shutdown(const rclcpp_lifec
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
+void QuattroSystem::requestBusTelemetry()
+{
+  for (auto & joint : joints_) {
+    joint.manager->motor(joint.node_id).requestBusVoltageCurrent();
+  }
+}
+
+void QuattroSystem::captureFaultDiagnostics()
+{
+  constexpr std::array<gim6010_driver::ErrorType, 4> error_types{{
+    gim6010_driver::ErrorType::kMotor,
+    gim6010_driver::ErrorType::kEncoder,
+    gim6010_driver::ErrorType::kController,
+    gim6010_driver::ErrorType::kSystem}};
+  try {
+    for (const auto type : error_types) {
+      for (auto & joint : joints_) {
+        joint.manager->motor(joint.node_id).requestError(type);
+      }
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+      while (std::chrono::steady_clock::now() < deadline) {
+        pollManagers();
+        const bool complete = std::all_of(
+          joints_.begin(), joints_.end(), [type](const Joint & joint) {
+            return joint.manager->motor(joint.node_id).hasError(type);
+          });
+        if (complete) {break;}
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      }
+    }
+    requestBusTelemetry();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+    while (std::chrono::steady_clock::now() < deadline) {
+      pollManagers();
+      const bool complete = std::all_of(joints_.begin(), joints_.end(), [](const Joint & joint) {
+            return joint.manager->motor(joint.node_id).hasBusVoltageCurrent();
+      });
+      if (complete) {break;}
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    for (const auto & joint : joints_) {
+      const auto & motor = joint.manager->motor(joint.node_id);
+      const auto motor_error = motor.hasError(gim6010_driver::ErrorType::kMotor) ?
+        motor.error(gim6010_driver::ErrorType::kMotor) : 0U;
+      const auto encoder_error = motor.hasError(gim6010_driver::ErrorType::kEncoder) ?
+        motor.error(gim6010_driver::ErrorType::kEncoder) : 0U;
+      const auto controller_error = motor.hasError(gim6010_driver::ErrorType::kController) ?
+        motor.error(gim6010_driver::ErrorType::kController) : 0U;
+      const auto system_error = motor.hasError(gim6010_driver::ErrorType::kSystem) ?
+        motor.error(gim6010_driver::ErrorType::kSystem) : 0U;
+      const double voltage = motor.hasBusVoltageCurrent() ?
+        motor.busVoltageCurrent().voltage : std::numeric_limits<double>::quiet_NaN();
+      RCLCPP_ERROR(
+        get_logger(),
+        "Motor fault details: joint=%s interface=%s can_id=%u motor=%s encoder=%s "
+        "controller=%s system=%s(%s) bus_voltage=%.3fV",
+        joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
+        hexValue(motor_error).c_str(), hexValue(encoder_error).c_str(),
+        hexValue(controller_error).c_str(), hexValue(system_error).c_str(),
+        systemErrorName(system_error).c_str(), voltage);
+    }
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR(get_logger(), "Failed to collect motor fault details: %s", error.what());
+  }
+}
+
+void QuattroSystem::publishDiagnostics(bool force)
+{
+  if (!diagnostics_publisher_) {return;}
+  const auto now = std::chrono::steady_clock::now();
+  if (!force && now < next_diagnostics_publish_) {return;}
+  next_diagnostics_publish_ = now + std::chrono::seconds{1};
+
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = get_node()->now();
+  array.status.reserve(joints_.size());
+  for (const auto & joint : joints_) {
+    const auto & motor = joint.manager->motor(joint.node_id);
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "quattro_hardware/" + joint.name;
+    status.hardware_id = joint.can_interface + ":" + std::to_string(joint.node_id);
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+    status.message = "operational";
+    if (!motor.hasHeartbeat() || motor.heartbeatStale(heartbeat_timeout_)) {
+      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      status.message = "heartbeat unavailable or stale";
+    } else {
+      const auto & heartbeat = motor.heartbeat();
+      if (heartbeat.axis_error != 0U || heartbeat.axis_state != kClosedLoopControl) {
+        status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        status.message = "motor fault or not in closed-loop control";
+      }
+      status.values.push_back(diagnosticValue("axis_error", hexValue(heartbeat.axis_error)));
+      status.values.push_back(
+        diagnosticValue("axis_state", std::to_string(heartbeat.axis_state)));
+      status.values.push_back(diagnosticValue("flags", hexValue(heartbeat.flags)));
+      status.values.push_back(diagnosticValue("life", std::to_string(heartbeat.life)));
+    }
+    status.values.push_back(
+      diagnosticValue("missed_heartbeats", std::to_string(motor.missedHeartbeats())));
+    if (motor.hasBusVoltageCurrent()) {
+      status.values.push_back(diagnosticValue(
+          "bus_voltage_v", std::to_string(motor.busVoltageCurrent().voltage)));
+      status.values.push_back(diagnosticValue(
+          "bus_current_a", std::to_string(motor.busVoltageCurrent().current)));
+    }
+    for (const auto type : {gim6010_driver::ErrorType::kMotor,
+        gim6010_driver::ErrorType::kEncoder, gim6010_driver::ErrorType::kController,
+        gim6010_driver::ErrorType::kSystem})
+    {
+      if (motor.hasError(type)) {
+        status.values.push_back(diagnosticValue(
+            "error_type_" + std::to_string(static_cast<unsigned>(type)),
+            hexValue(motor.error(type))));
+      }
+    }
+    array.status.push_back(std::move(status));
+  }
+  diagnostics_publisher_->publish(array);
+}
+
 hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
   try {
-    for (auto & manager : managers_) {
-      while (manager.second->poll(std::chrono::milliseconds{0})) {
-      }
-    }
-    for (const auto & joint : joints_) {
+    pollManagers();
+    for (auto & joint : joints_) {
       const auto & motor = joint.manager->motor(joint.node_id);
       if (active_ && motor.feedbackStale(feedback_timeout_)) {
         RCLCPP_ERROR(get_logger(), "Stale feedback from %s", joint.name.c_str());
         safeStop();
+        captureFaultDiagnostics();
+        publishDiagnostics(true);
         return hardware_interface::return_type::ERROR;
+      }
+      if (active_ && motor.heartbeatStale(heartbeat_timeout_)) {
+        RCLCPP_ERROR(get_logger(), "Stale heartbeat from %s", joint.name.c_str());
+        safeStop();
+        captureFaultDiagnostics();
+        publishDiagnostics(true);
+        return hardware_interface::return_type::ERROR;
+      }
+      if (active_ && motor.hasHeartbeat()) {
+        const auto & heartbeat = motor.heartbeat();
+        if (heartbeat.axis_error != 0U || heartbeat.axis_state != kClosedLoopControl) {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Motor left closed-loop control: joint=%s interface=%s can_id=%u "
+            "axis_error=%s axis_state=%u flags=%s life=%u",
+            joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
+            hexValue(heartbeat.axis_error).c_str(), static_cast<unsigned>(heartbeat.axis_state),
+            hexValue(heartbeat.flags).c_str(), static_cast<unsigned>(heartbeat.life));
+          safeStop();
+          captureFaultDiagnostics();
+          publishDiagnostics(true);
+          return hardware_interface::return_type::ERROR;
+        }
+        if (motor.missedHeartbeats() > joint.reported_missed_heartbeats) {
+          RCLCPP_WARN(
+            get_logger(), "Heartbeat gap detected: joint=%s total_missed=%llu",
+            joint.name.c_str(),
+            static_cast<unsigned long long>(motor.missedHeartbeats()));
+          joint.reported_missed_heartbeats = motor.missedHeartbeats();
+        }
       }
       if (!motor.hasFeedback()) {continue;}
       const auto & feedback = motor.feedback();
@@ -325,9 +553,17 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
       set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
         joint.direction * feedback.torque);
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (active_ && now >= next_telemetry_request_) {
+      requestBusTelemetry();
+      next_telemetry_request_ = now + telemetry_period_;
+    }
+    publishDiagnostics();
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "CAN read failed: %s", error.what());
     safeStop();
+    captureFaultDiagnostics();
+    publishDiagnostics(true);
     return hardware_interface::return_type::ERROR;
   }
   return hardware_interface::return_type::OK;
@@ -340,6 +576,8 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
   if (now - last_write_ > command_timeout_) {
     RCLCPP_ERROR(get_logger(), "Hardware command watchdog expired");
     safeStop();
+    captureFaultDiagnostics();
+    publishDiagnostics(true);
     return hardware_interface::return_type::ERROR;
   }
   try {
@@ -381,6 +619,8 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Unsafe command rejected: %s", error.what());
     safeStop();
+    captureFaultDiagnostics();
+    publishDiagnostics(true);
     return hardware_interface::return_type::ERROR;
   }
   return hardware_interface::return_type::OK;

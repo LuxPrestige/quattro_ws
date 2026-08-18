@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/can_socket.cpp
+  src/can_diagnostics.cpp
   src/mit_protocol.cpp
   src/gim6010_motor.cpp
   src/motor_manager.cpp)
@@ -25,6 +26,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_mit_protocol test/test_mit_protocol.cpp)
   target_link_libraries(test_mit_protocol ${PROJECT_NAME})
+  ament_add_gtest(test_can_diagnostics test/test_can_diagnostics.cpp)
+  target_link_libraries(test_can_diagnostics ${PROJECT_NAME})
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

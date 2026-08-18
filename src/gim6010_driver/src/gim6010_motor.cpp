@@ -88,10 +88,46 @@ void Gim6010Motor::disable()
   sendRaw(kCommandSetAxisState, payload.data(), payload.size());
 }
 void Gim6010Motor::requestEncoderEstimates() {sendRaw(kCommandEncoderEstimates, nullptr, 0, true);}
+void Gim6010Motor::requestError(ErrorType type)
+{
+  const auto value = static_cast<std::uint8_t>(type);
+  errors_.erase(type);
+  pending_error_type_ = type;
+  sendRaw(kCommandGetError, &value, 1);
+}
+void Gim6010Motor::requestBusVoltageCurrent()
+{
+  has_bus_voltage_current_ = false;
+  sendRaw(kCommandGetBusVoltageCurrent, nullptr, 0, true);
+}
 void Gim6010Motor::sendCommand(const MitCommand & command)
 {
   const auto payload = encodeCommand(command);
   sendRaw(kCommandMitControl, payload.data(), payload.size());
+}
+void Gim6010Motor::updateHeartbeat(const std::uint8_t * data, std::size_t length)
+{
+  const auto next = decodeHeartbeat(data, length);
+  if (has_heartbeat_) {
+    const auto advance = static_cast<std::uint8_t>(next.life - heartbeat_.life);
+    if (advance > 1U) {
+      missed_heartbeats_ += static_cast<std::uint8_t>(advance - 1U);
+    }
+  }
+  heartbeat_ = next;
+  heartbeat_time_ = std::chrono::steady_clock::now();
+  has_heartbeat_ = true;
+}
+void Gim6010Motor::updateError(const std::uint8_t * data, std::size_t length)
+{
+  if (!pending_error_type_) {return;}
+  errors_[*pending_error_type_] = decodeError(data, length, *pending_error_type_);
+  pending_error_type_.reset();
+}
+void Gim6010Motor::updateBusVoltageCurrent(const std::uint8_t * data, std::size_t length)
+{
+  bus_voltage_current_ = decodeBusVoltageCurrent(data, length);
+  has_bus_voltage_current_ = true;
 }
 void Gim6010Motor::updateFeedback(const MitFeedback & feedback)
 {
@@ -125,6 +161,28 @@ bool Gim6010Motor::feedbackStale(std::chrono::steady_clock::duration timeout) co
   return !has_feedback_ || std::chrono::steady_clock::now() - feedback_time_ > timeout;
 }
 const MitFeedback & Gim6010Motor::feedback() const noexcept {return feedback_;}
+bool Gim6010Motor::hasHeartbeat() const noexcept {return has_heartbeat_;}
+bool Gim6010Motor::heartbeatStale(std::chrono::steady_clock::duration timeout) const
+{
+  return !has_heartbeat_ || std::chrono::steady_clock::now() - heartbeat_time_ > timeout;
+}
+const Heartbeat & Gim6010Motor::heartbeat() const noexcept {return heartbeat_;}
+std::uint64_t Gim6010Motor::missedHeartbeats() const noexcept {return missed_heartbeats_;}
+bool Gim6010Motor::hasError(ErrorType type) const noexcept
+{
+  return errors_.count(type) != 0U;
+}
+std::uint64_t Gim6010Motor::error(ErrorType type) const
+{
+  const auto entry = errors_.find(type);
+  if (entry == errors_.end()) {throw std::logic_error("GIM6010 error value is unavailable");}
+  return entry->second;
+}
+bool Gim6010Motor::hasBusVoltageCurrent() const noexcept {return has_bus_voltage_current_;}
+const BusVoltageCurrent & Gim6010Motor::busVoltageCurrent() const noexcept
+{
+  return bus_voltage_current_;
+}
 bool Gim6010Motor::hasEncoderEstimates() const noexcept {return has_encoder_estimates_;}
 bool Gim6010Motor::encoderEstimatesStale(
   std::chrono::steady_clock::duration timeout) const

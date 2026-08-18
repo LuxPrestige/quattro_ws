@@ -34,6 +34,14 @@ bool MotorManager::poll(std::chrono::milliseconds timeout)
   if (entry == motors_.end()) {
     return true;
   }
+  if (command_id == Gim6010Motor::kCommandHeartbeat && frame.dlc == 8) {
+    entry->second->updateHeartbeat(frame.data.data(), frame.dlc);
+    return true;
+  }
+  if (command_id == Gim6010Motor::kCommandGetError && frame.dlc >= 4) {
+    entry->second->updateError(frame.data.data(), frame.dlc);
+    return true;
+  }
   if (command_id == Gim6010Motor::kCommandMitControl && frame.dlc >= 6) {
     auto feedback = decodeFeedback(frame.data.data(), frame.dlc);
     if (feedback.motor_id != node_id) {
@@ -44,6 +52,10 @@ bool MotorManager::poll(std::chrono::milliseconds timeout)
   }
   if (command_id == Gim6010Motor::kCommandEncoderEstimates && frame.dlc == 8) {
     entry->second->updateEncoderEstimates(frame.data.data(), frame.dlc);
+    return true;
+  }
+  if (command_id == Gim6010Motor::kCommandGetBusVoltageCurrent && frame.dlc == 8) {
+    entry->second->updateBusVoltageCurrent(frame.data.data(), frame.dlc);
     return true;
   }
   return true;

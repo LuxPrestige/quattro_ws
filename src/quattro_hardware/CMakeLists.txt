@@ -24,7 +24,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(${PROJECT_NAME}
-  rclcpp rclcpp_lifecycle hardware_interface pluginlib gim6010_driver)
+  rclcpp rclcpp_lifecycle hardware_interface pluginlib diagnostic_msgs gim6010_driver)
 pluginlib_export_plugin_description_file(hardware_interface quattro_hardware.xml)
 
 add_executable(calibration_gui src/calibration_gui.cpp)
@@ -51,5 +51,5 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(hardware_interface pluginlib gim6010_driver)
+ament_export_dependencies(hardware_interface pluginlib diagnostic_msgs gim6010_driver)
 ament_package()
