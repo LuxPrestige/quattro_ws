@@ -29,6 +29,7 @@ quattro_teleop:
     deadzone: 0.10
     joy_timeout_sec: 0.5
     publish_rate_hz: 20.0
+    start_stepping: true
 
     clearance_height: 0.040
     penetration_depth: 0.008

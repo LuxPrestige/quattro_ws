@@ -15,6 +15,8 @@ namespace quattro_hardware
 {
 namespace
 {
+constexpr auto kConfigureFrameInterval = std::chrono::milliseconds{2};
+
 double parameterDouble(
   const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
   double fallback)
@@ -56,8 +58,11 @@ hardware_interface::CallbackReturn QuattroSystem::on_init(
     command_timeout_ = std::chrono::milliseconds(parameterLong(hp, "command_timeout_ms", 100));
     motor_velocity_limit_ = parameterDouble(hp, "motor_velocity_limit", 50.0);
     motor_current_limit_ = parameterDouble(hp, "motor_current_limit", 20.0);
+    engagement_duration_ = std::chrono::milliseconds(
+      parameterLong(hp, "engagement_duration_ms", 1000));
     if (feedback_timeout_.count() <= 0 || startup_timeout_.count() <= 0 ||
-      command_timeout_.count() <= 0 || motor_velocity_limit_ <= 0.0 || motor_current_limit_ <= 0.0)
+      command_timeout_.count() <= 0 || motor_velocity_limit_ <= 0.0 ||
+      motor_current_limit_ <= 0.0 || engagement_duration_.count() <= 0)
     {
       throw std::invalid_argument("hardware timeout and motor limits must be positive");
     }
@@ -127,10 +132,12 @@ bool QuattroSystem::configureMotors()
     joint.manager = manager.get();
     auto & motor = manager->motor(joint.node_id);
     motor.clearErrors();
+    std::this_thread::sleep_for(kConfigureFrameInterval);
     motor.setLimits(static_cast<float>(motor_velocity_limit_),
         static_cast<float>(motor_current_limit_));
+    std::this_thread::sleep_for(kConfigureFrameInterval);
     motor.setMitMode();
-    motor.requestEncoderEstimates();
+    std::this_thread::sleep_for(kConfigureFrameInterval);
   }
   return true;
 }
@@ -143,16 +150,29 @@ bool QuattroSystem::waitForInitialFeedback()
       while (manager.second->poll(std::chrono::milliseconds{0})) {
       }
     }
-    const bool ready = std::all_of(joints_.begin(), joints_.end(), [](const Joint & joint) {
-          return joint.manager->motor(joint.node_id).hasFeedback();
+    const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
+          const auto & motor = joint.manager->motor(joint.node_id);
+          return motor.hasFeedback() && !motor.feedbackStale(feedback_timeout_);
     });
     if (ready) {return true;}
     for (auto & joint : joints_) {
-      if (!joint.manager->motor(joint.node_id).hasFeedback()) {
-        joint.manager->motor(joint.node_id).requestEncoderEstimates();
+      auto & motor = joint.manager->motor(joint.node_id);
+      if (!motor.hasFeedback() || motor.feedbackStale(feedback_timeout_)) {
+        motor.sendCommand({0.0, 0.0, 0.0, 0.0, 0.0});
+        motor.requestEncoderEstimates();
       }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  }
+  for (const auto & joint : joints_) {
+    const auto & motor = joint.manager->motor(joint.node_id);
+    if (!motor.hasFeedback() || motor.feedbackStale(feedback_timeout_)) {
+      RCLCPP_ERROR(
+        get_logger(),
+          "Missing fresh 0x08/0x09 feedback: joint=%s interface=%s can_id=%u received=%s",
+        joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
+        motor.hasFeedback() ? "yes (stale)" : "no");
+    }
   }
   return false;
 }
@@ -163,20 +183,19 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
     managers_.clear();
     configureMotors();
     if (!waitForInitialFeedback()) {
-      RCLCPP_ERROR(get_logger(), "Safe Start failed: not all motors supplied encoder feedback");
+      RCLCPP_ERROR(get_logger(), "Safe Start failed: not all motors supplied feedback");
       safeStop();
       return hardware_interface::CallbackReturn::ERROR;
     }
     for (const auto & joint : joints_) {
       const auto & feedback = joint.manager->motor(joint.node_id).feedback();
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION),
-        joint.direction * feedback.position - joint.offset);
+      const double joint_position = joint.direction * feedback.position - joint.offset;
+      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
       set_state(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY),
         joint.direction * feedback.velocity);
       set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
         joint.direction * feedback.torque);
-      set_command(interfaceKey(joint, hardware_interface::HW_IF_POSITION),
-        joint.direction * feedback.position - joint.offset);
+      set_command(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
     }
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Failed to configure motors: %s", error.what());
@@ -191,18 +210,78 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
   try {
     for (auto & joint : joints_) {
       auto & motor = joint.manager->motor(joint.node_id);
-      if (motor.feedbackStale(feedback_timeout_)) {
-        throw std::runtime_error(joint.name + " feedback is stale before activation");
-      }
-      const double hold = motor.feedback().position;
-      motor.sendCommand({hold, 0.0, joint.kp, joint.kd, 0.0});
       motor.enable();
-      motor.sendCommand({hold, 0.0, joint.kp, joint.kd, 0.0});
-      set_command(interfaceKey(joint, hardware_interface::HW_IF_POSITION),
-        joint.direction * hold - joint.offset);
+      std::this_thread::sleep_for(kConfigureFrameInterval);
+      motor.sendCommand({0.0, 0.0, 0.0, 0.0, 0.0});
+      std::this_thread::sleep_for(kConfigureFrameInterval);
+    }
+
+    if (!waitForInitialFeedback()) {
+      throw std::runtime_error(
+              "not all enabled motors supplied fresh 0x08 or 0x09 feedback");
+    }
+
+    constexpr auto control_period = std::chrono::milliseconds{10};
+
+    for (std::size_t refresh = 0; refresh < 3; ++refresh) {
+      for (auto & joint : joints_) {
+        auto & motor = joint.manager->motor(joint.node_id);
+        motor.sendCommand({motor.feedback().position, 0.0, 0.0, joint.kd, 0.0});
+      }
+      std::this_thread::sleep_for(control_period);
+      for (auto & manager : managers_) {
+        while (manager.second->poll(std::chrono::milliseconds{0})) {
+        }
+      }
+    }
+
+    std::vector<double> hold_positions;
+    hold_positions.reserve(joints_.size());
+    for (const auto & joint : joints_) {
+      const auto & motor = joint.manager->motor(joint.node_id);
+      if (motor.feedbackStale(feedback_timeout_)) {
+        throw std::runtime_error(
+                joint.name + " did not supply fresh feedback after zero-Kp activation");
+      }
+      hold_positions.push_back(motor.feedback().position);
+    }
+
+    const auto engagement_steps = std::max<std::int64_t>(
+      1, engagement_duration_.count() / control_period.count());
+    auto next_cycle = std::chrono::steady_clock::now();
+    for (std::int64_t step = 1; step <= engagement_steps; ++step) {
+      const double gain_ratio =
+        static_cast<double>(step) / static_cast<double>(engagement_steps);
+      for (std::size_t index = 0; index < joints_.size(); ++index) {
+        const auto & joint = joints_[index];
+        joint.manager->motor(joint.node_id).sendCommand(
+          {hold_positions[index], 0.0, joint.kp * gain_ratio, joint.kd, 0.0});
+      }
+      next_cycle += control_period;
+      std::this_thread::sleep_until(next_cycle);
+      for (auto & manager : managers_) {
+        while (manager.second->poll(std::chrono::milliseconds{0})) {
+        }
+      }
+    }
+
+    for (const auto & joint : joints_) {
+      const auto & feedback = joint.manager->motor(joint.node_id).feedback();
+      const double joint_position = joint.direction * feedback.position - joint.offset;
+      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
+      set_state(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY),
+        joint.direction * feedback.velocity);
+      set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
+        joint.direction * feedback.torque);
+      set_command(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
     }
     last_write_ = std::chrono::steady_clock::now();
+    position_limits_enabled_ = false;
     active_ = true;
+    RCLCPP_INFO(
+      get_logger(),
+      "All motors engaged at their current positions; position limits remain disabled until "
+      "all initial-pose commands enter their configured ranges");
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Safe Start activation failed: %s", error.what());
     safeStop();
@@ -264,11 +343,35 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
     return hardware_interface::return_type::ERROR;
   }
   try {
+    std::vector<double> commands;
+    commands.reserve(joints_.size());
+    bool all_commands_in_range = true;
     for (const auto & joint : joints_) {
       const double command = get_command<double>(interfaceKey(joint,
           hardware_interface::HW_IF_POSITION));
-      if (!std::isfinite(command) || command < joint.lower || command > joint.upper) {
-        throw std::out_of_range(joint.name + " position command violates configured limit");
+      if (!std::isfinite(command)) {
+        throw std::out_of_range(joint.name + " position command is not finite");
+      }
+      commands.push_back(command);
+      all_commands_in_range = all_commands_in_range &&
+        command >= joint.lower && command <= joint.upper;
+    }
+
+    if (!position_limits_enabled_ && all_commands_in_range) {
+      position_limits_enabled_ = true;
+      RCLCPP_INFO(
+        get_logger(),
+        "All initial-pose commands are within their configured ranges; position limits enabled");
+    }
+
+    for (std::size_t index = 0; index < joints_.size(); ++index) {
+      const auto & joint = joints_[index];
+      const double command = commands[index];
+      if (position_limits_enabled_ && (command < joint.lower || command > joint.upper)) {
+        throw std::out_of_range(
+                joint.name + " position command " + std::to_string(command) +
+                " violates limits [" + std::to_string(joint.lower) + ", " +
+                std::to_string(joint.upper) + "]");
       }
       const double motor_position = joint.direction * (command + joint.offset);
       joint.manager->motor(joint.node_id).sendCommand(
@@ -286,6 +389,7 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
 void QuattroSystem::safeStop() noexcept
 {
   active_ = false;
+  position_limits_enabled_ = false;
   for (auto & manager : managers_) {
     manager.second->disableAll();
   }

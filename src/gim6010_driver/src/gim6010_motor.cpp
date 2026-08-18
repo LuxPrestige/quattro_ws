@@ -110,10 +110,13 @@ void Gim6010Motor::updateEncoderEstimates(const std::uint8_t * data, std::size_t
   std::memcpy(&position_turns, data, sizeof(float));
   std::memcpy(&velocity_turns_per_second, data + 4, sizeof(float));
   constexpr double two_pi = 6.28318530717958647692;
-  feedback_ = MitFeedback{
+  encoder_estimates_ = MitFeedback{
     node_id_, position_turns * two_pi / gear_ratio_,
     velocity_turns_per_second * two_pi / gear_ratio_, 0.0};
-  feedback_time_ = std::chrono::steady_clock::now();
+  encoder_estimates_time_ = std::chrono::steady_clock::now();
+  has_encoder_estimates_ = true;
+  feedback_ = encoder_estimates_;
+  feedback_time_ = encoder_estimates_time_;
   has_feedback_ = true;
 }
 bool Gim6010Motor::hasFeedback() const noexcept {return has_feedback_;}
@@ -122,4 +125,15 @@ bool Gim6010Motor::feedbackStale(std::chrono::steady_clock::duration timeout) co
   return !has_feedback_ || std::chrono::steady_clock::now() - feedback_time_ > timeout;
 }
 const MitFeedback & Gim6010Motor::feedback() const noexcept {return feedback_;}
+bool Gim6010Motor::hasEncoderEstimates() const noexcept {return has_encoder_estimates_;}
+bool Gim6010Motor::encoderEstimatesStale(
+  std::chrono::steady_clock::duration timeout) const
+{
+  return !has_encoder_estimates_ ||
+         std::chrono::steady_clock::now() - encoder_estimates_time_ > timeout;
+}
+const MitFeedback & Gim6010Motor::encoderEstimates() const noexcept
+{
+  return encoder_estimates_;
+}
 }  // namespace gim6010_driver

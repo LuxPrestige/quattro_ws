@@ -41,6 +41,9 @@ public:
   bool hasFeedback() const noexcept;
   bool feedbackStale(std::chrono::steady_clock::duration timeout) const;
   const MitFeedback & feedback() const noexcept;
+  bool hasEncoderEstimates() const noexcept;
+  bool encoderEstimatesStale(std::chrono::steady_clock::duration timeout) const;
+  const MitFeedback & encoderEstimates() const noexcept;
 
 private:
   void sendRaw(
@@ -51,6 +54,9 @@ private:
   MitFeedback feedback_{};
   std::chrono::steady_clock::time_point feedback_time_{};
   bool has_feedback_{false};
+  MitFeedback encoder_estimates_{};
+  std::chrono::steady_clock::time_point encoder_estimates_time_{};
+  bool has_encoder_estimates_{false};
   double gear_ratio_{8.0};
 };
 

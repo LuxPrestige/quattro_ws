@@ -18,6 +18,54 @@ def test_stationary_command_returns_nominal_stance():
             QuadrupedKinematics().nominal_foot_positions[name])
 
 
+def test_stop_finishes_current_cycle_before_returning_to_nominal():
+    parameters = GaitParameters(stop_return_speed=0.08)
+    generator = GaitGenerator(parameters=parameters)
+    nominal = QuadrupedKinematics().nominal_foot_positions
+    generator.update(0.1, (0.2, 0.0))
+    moving_phase = generator.phase
+
+    released = generator.update(0.01)
+
+    assert generator.finishing_cycle
+    assert generator.phase > moving_phase
+    assert any(np.linalg.norm(released[name] - nominal[name]) > 0.0
+               for name in LEG_NAMES)
+
+    for _ in range(100):
+        boundary = generator.update(0.01)
+        if not generator.finishing_cycle:
+            break
+
+    assert not generator.finishing_cycle
+    assert generator.phase == 0.0
+    returning = generator.update(0.01)
+    maximum_step = parameters.stop_return_speed * 0.01
+    for name in LEG_NAMES:
+        assert np.linalg.norm(returning[name] - boundary[name]) <= (
+            maximum_step + 1.0e-12)
+
+    for _ in range(1000):
+        stopped = generator.update(0.01)
+
+    for name in LEG_NAMES:
+        assert stopped[name] == pytest.approx(nominal[name])
+
+
+def test_immediate_stop_does_not_finish_cycle():
+    parameters = GaitParameters(stop_return_speed=0.08)
+    generator = GaitGenerator(parameters=parameters)
+    moving = generator.update(0.1, (0.2, 0.0))
+
+    stopped = generator.update(0.01, complete_cycle_on_stop=False)
+
+    assert not generator.finishing_cycle
+    maximum_step = parameters.stop_return_speed * 0.01
+    for name in LEG_NAMES:
+        assert np.linalg.norm(stopped[name] - moving[name]) <= (
+            maximum_step + 1.0e-12)
+
+
 def test_trot_diagonal_legs_share_phase():
     generator = GaitGenerator()
     generator.update(0.07, (0.1, 0.0))

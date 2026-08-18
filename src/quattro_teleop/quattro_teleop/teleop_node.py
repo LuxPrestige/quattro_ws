@@ -53,6 +53,7 @@ class TeleopNode(Node):
             'publish_rate_hz': 20.0,
             'clearance_height': 0.040,
             'penetration_depth': 0.008,
+            'start_stepping': True,
             'swing_duration': 0.25,
             'adjustment_step': 0.001,
         }
@@ -70,7 +71,7 @@ class TeleopNode(Node):
 
         self._last_joy_time = None
         self._last_buttons: List[int] = []
-        self._stepping = True
+        self._stepping = bool(self._parameters['start_stepping'])
         self._estop = False
         self._imu_auto = False
         self._twist = Twist()
@@ -120,11 +121,14 @@ class TeleopNode(Node):
     def _on_joy(self, message: Joy) -> None:
         self._last_joy_time = self.get_clock().now()
         if self._rising_edge(message.buttons, 'button_switch_mode'):
-            self._stepping = not self._stepping
-            request = SetBool.Request()
-            request.data = self._stepping
             if self._gait_client.service_is_ready():
+                self._stepping = not self._stepping
+                request = SetBool.Request()
+                request.data = self._stepping
                 self._gait_client.call_async(request)
+            else:
+                self.get_logger().warning(
+                    'Gait service is not ready; mode change was ignored.')
         if self._rising_edge(message.buttons, 'button_estop'):
             self._estop = not self._estop
         if self._rising_edge(message.buttons, 'button_imu_auto'):

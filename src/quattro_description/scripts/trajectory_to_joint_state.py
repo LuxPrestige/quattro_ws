@@ -30,7 +30,7 @@ class TrajectoryToJointState(Node):
         if not message.points:
             self.get_logger().warning('Ignoring trajectory without points')
             return
-        positions = message.points[0].positions
+        positions = message.points[-1].positions
         if len(message.joint_names) != len(positions):
             self.get_logger().error(
                 'Ignoring trajectory with mismatched names and positions')

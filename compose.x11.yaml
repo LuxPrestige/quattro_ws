@@ -1,0 +1,13 @@
+services:
+  dev:
+    environment:
+      DISPLAY: ${DISPLAY:?Run Docker Compose from an X11-forwarded shell}
+      XAUTHORITY: /tmp/.docker.xauth
+
+    volumes:
+      - type: bind
+        source: ${XAUTHORITY:-${HOME}/.Xauthority}
+        target: /tmp/.docker.xauth
+        read_only: true
+        bind:
+          create_host_path: false

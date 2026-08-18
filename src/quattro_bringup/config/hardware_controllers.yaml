@@ -1,0 +1,43 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    use_sim_time: false
+
+    hardware_components_initial_state:
+      inactive:
+        - QuattroSystem
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - front_left_hip_joint
+      - front_left_upper_leg_joint
+      - front_left_lower_leg_joint
+      - front_right_hip_joint
+      - front_right_upper_leg_joint
+      - front_right_lower_leg_joint
+      - back_left_hip_joint
+      - back_left_upper_leg_joint
+      - back_left_lower_leg_joint
+      - back_right_hip_joint
+      - back_right_upper_leg_joint
+      - back_right_lower_leg_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    open_loop_control: false
+    allow_integration_in_goal_trajectories: true
+    constraints:
+      stopped_velocity_tolerance: 0.1
+      goal_time: 0.0

@@ -11,9 +11,10 @@ from quattro.kinematics import (
 )
 from quattro.pose_controller import quaternion_to_rpy
 import rclpy
+from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Bool, Float64
 from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -42,13 +43,20 @@ class GaitController(Node):
             'command_timeout', 0.5).value)
         self._velocity_ramp_rate = float(self.declare_parameter(
             'velocity_ramp_rate', 0.5).value)
+        self._initial_pose_duration = float(self.declare_parameter(
+            'initial_pose_duration', 5.0).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
         self._pid_ki = float(self.declare_parameter('pose_pid.ki', 0.1).value)
+        start_enabled = bool(self.declare_parameter(
+            'start_enabled', True).value)
         self._pid_kd = float(self.declare_parameter('pose_pid.kd', 0.05).value)
         self._pid_limit = float(self.declare_parameter(
             'pose_pid.integral_limit', 0.5).value)
-        if self._control_frequency <= 0.0 or self._command_timeout <= 0.0:
-            raise ValueError('control_frequency and command_timeout must be positive')
+        if (self._control_frequency <= 0.0 or self._command_timeout <= 0.0 or
+                self._initial_pose_duration <= 0.0):
+            raise ValueError(
+                'control_frequency, command_timeout, and '
+                'initial_pose_duration must be positive')
 
         geometry = RobotGeometry(**geometry_values)
         self._kinematics = QuadrupedKinematics(geometry)
@@ -60,7 +68,11 @@ class GaitController(Node):
         self._imu_rpy = (0.0, 0.0, 0.0)
         self._imu_rates = (0.0, 0.0)
         self._integral = [0.0, 0.0]
-        self._gait_enabled = True
+        self._gait_enabled = start_enabled
+        self._output_enabled = start_enabled
+        self._initial_pose_pending = start_enabled
+        self._initial_pose_deadline = None
+        self._joint_positions: dict[str, float] = {}
         self._balance_enabled = False
         self._estop = False
         self._gait_values = gait_values
@@ -71,6 +83,8 @@ class GaitController(Node):
             JointTrajectory, 'joint_trajectory_controller/joint_trajectory', 10)
         self._subscription = self.create_subscription(
             Twist, 'cmd_vel', self._on_command, 10)
+        self.create_subscription(
+            JointState, 'joint_states', self._on_joint_state, 10)
         self.create_subscription(PoseStamped, 'body_pose', self._on_pose, 10)
         self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
         self.create_subscription(Bool, 'estop', self._on_estop, 10)
@@ -104,6 +118,9 @@ class GaitController(Node):
     def _on_command(self, message: Twist) -> None:
         self._command = message
         self._last_command_time = self.get_clock().now()
+
+    def _on_joint_state(self, message: JointState) -> None:
+        self._joint_positions.update(zip(message.name, message.position))
 
     def _on_contact(self, leg_name: str, message: Bool) -> None:
         self._contacts[leg_name] = message.data
@@ -146,8 +163,11 @@ class GaitController(Node):
         self._gait.reset(phase)
 
     def _set_gait_enabled(self, request, response):
+        output_was_disabled = not self._output_enabled
         self._gait_enabled = request.data
-        self._gait.reset()
+        self._output_enabled = True
+        if output_was_disabled:
+            self._initial_pose_pending = True
         self._smoothed_velocity = [0.0, 0.0, 0.0]
         if request.data:
             self._body_rpy = (0.0, 0.0, 0.0)
@@ -192,9 +212,18 @@ class GaitController(Node):
         return current + math.copysign(step, difference)
 
     def _update(self) -> None:
+        if not self._output_enabled:
+            return
         now = self.get_clock().now()
+        if (self._initial_pose_deadline is not None and
+                now < self._initial_pose_deadline):
+            return
+        self._initial_pose_deadline = None
         command_age = (now - self._last_command_time).nanoseconds / 1.0e9
-        immediate_stop = command_age > self._command_timeout or self._estop
+        if self._estop:
+            self._smoothed_velocity = [0.0, 0.0, 0.0]
+            return
+        immediate_stop = command_age > self._command_timeout
         if immediate_stop:
             self._smoothed_velocity = [0.0, 0.0, 0.0]
         else:
@@ -203,25 +232,30 @@ class GaitController(Node):
                 self._command.linear.y,
                 self._command.angular.z,
             )
-            dt = 1.0 / self._control_frequency
-            self._smoothed_velocity = [
-                self._ramp(current, target, dt)
-                for current, target in zip(self._smoothed_velocity, targets)
-            ]
+            if all(abs(target) <= 1.0e-6 for target in targets):
+                self._smoothed_velocity = [0.0, 0.0, 0.0]
+            else:
+                dt = 1.0 / self._control_frequency
+                self._smoothed_velocity = [
+                    self._ramp(current, target, dt)
+                    for current, target in zip(self._smoothed_velocity, targets)
+                ]
         velocity = tuple(self._smoothed_velocity[:2])
         yaw_rate = self._smoothed_velocity[2]
 
         try:
-            if self._gait_enabled and not self._estop:
+            if self._gait_enabled:
                 feet = self._gait.update(
                     1.0 / self._control_frequency,
                     velocity,
                     yaw_rate,
                     self._contacts,
+                    complete_cycle_on_stop=not immediate_stop,
                 )
             else:
-                self._gait.reset()
-                feet = self._kinematics.nominal_foot_positions
+                feet = self._gait.update(
+                    1.0 / self._control_frequency, (0.0, 0.0), 0.0,
+                    self._contacts, complete_cycle_on_stop=False)
             positions = self._kinematics.inverse(
                 self._controlled_body_rpy(1.0 / self._control_frequency),
                 self._body_translation,
@@ -234,11 +268,28 @@ class GaitController(Node):
         trajectory = JointTrajectory()
         trajectory.header.stamp = now.to_msg()
         trajectory.joint_names = list(self._kinematics.joint_names)
+        duration = (self._initial_pose_duration if self._initial_pose_pending
+                    else 1.0 / self._control_frequency)
         point = JointTrajectoryPoint()
         point.positions = positions.reshape(-1).tolist()
-        point.time_from_start.nanosec = int(1.0e9 / self._control_frequency)
-        trajectory.points = [point]
+        seconds = int(duration)
+        point.time_from_start.sec = seconds
+        point.time_from_start.nanosec = int((duration - seconds) * 1.0e9)
+        if self._initial_pose_pending:
+            if not all(name in self._joint_positions
+                       for name in trajectory.joint_names):
+                return
+            start = JointTrajectoryPoint()
+            start.positions = [
+                self._joint_positions[name] for name in trajectory.joint_names]
+            trajectory.points = [start, point]
+        else:
+            trajectory.points = [point]
         self._publisher.publish(trajectory)
+        if self._initial_pose_pending:
+            self._initial_pose_pending = False
+            self._initial_pose_deadline = (
+                now + Duration(seconds=duration))
 
 
 def main(args=None) -> None:

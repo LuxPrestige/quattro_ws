@@ -35,6 +35,7 @@ class GaitParameters:
     penetration_depth: float = 0.008
     max_linear_speed: float = 0.30
     max_yaw_rate: float = 1.0
+    stop_return_speed: float = 0.08
 
     def __post_init__(self) -> None:
         if self.swing_duration <= 0.0 or self.stance_duration <= 0.0:
@@ -43,7 +44,8 @@ class GaitParameters:
             raise ValueError('stance_duration must not exceed 1.3 * swing_duration')
         if self.clearance_height < 0.0 or self.penetration_depth < 0.0:
             raise ValueError('foot heights must not be negative')
-        if self.max_linear_speed <= 0.0 or self.max_yaw_rate <= 0.0:
+        if (self.max_linear_speed <= 0.0 or self.max_yaw_rate <= 0.0 or
+                self.stop_return_speed <= 0.0):
             raise ValueError('speed limits must be positive')
 
 
@@ -72,11 +74,19 @@ class GaitGenerator:
         self._previous_offsets = {
             name: np.zeros(3, dtype=float) for name in LEG_NAMES}
         self._nominal_feet = self._stance_positions()
+        self._last_linear_velocity = np.zeros(2, dtype=float)
+        self._last_yaw_rate = 0.0
+        self._finishing_cycle = False
 
     @property
     def phase(self) -> float:
         """Return the normalized reference-leg gait phase."""
         return self._phase
+
+    @property
+    def finishing_cycle(self) -> bool:
+        """Return whether a released command is completing its current cycle."""
+        return self._finishing_cycle
 
     @property
     def stride_duration(self) -> float:
@@ -212,6 +222,7 @@ class GaitGenerator:
         linear_velocity: Sequence[float] = (0.0, 0.0),
         yaw_rate: float = 0.0,
         contacts: Mapping[str, bool] | None = None,
+        complete_cycle_on_stop: bool = True,
     ) -> dict[str, NDArray[np.float64]]:
         """
         Advance the reference gait and return nominal-frame foot targets.
@@ -237,21 +248,59 @@ class GaitGenerator:
             raise ValueError(f'contacts must contain {LEG_NAMES}')
 
         moving = speed > 1.0e-6 or abs(yaw_rate) > 1.0e-6
-        if not moving:
-            self.reset()
-            return {name: foot.copy() for name, foot in self._nominal_feet.items()}
-
-        reference_phase = self.leg_phase('front_left')
-        touchdown = (
-            reference_phase.in_swing
-            and reference_phase.normalized >= 0.9
-            and bool(contact_state['front_left'])
-        )
-        if touchdown:
-            self.reset()
+        if moving:
+            self._last_linear_velocity = velocity.copy()
+            self._last_yaw_rate = yaw_rate
+            self._finishing_cycle = False
+        elif complete_cycle_on_stop and (
+                np.linalg.norm(self._last_linear_velocity) > 1.0e-6 or
+                abs(self._last_yaw_rate) > 1.0e-6):
+            self._finishing_cycle = True
+            velocity = self._last_linear_velocity.copy()
+            yaw_rate = self._last_yaw_rate
+            speed = float(np.linalg.norm(velocity))
+            moving = True
         else:
-            self._time = (self._time + dt) % self.stride_duration
-            self._phase = self._time / self.stride_duration
+            self._finishing_cycle = False
+            self._last_linear_velocity.fill(0.0)
+            self._last_yaw_rate = 0.0
+
+        if not moving:
+            targets = {}
+            return_step = self.parameters.stop_return_speed * dt
+            all_nominal = True
+            for name in LEG_NAMES:
+                offset = self._previous_offsets[name]
+                distance = float(np.linalg.norm(offset))
+                if distance <= return_step:
+                    offset.fill(0.0)
+                elif distance > 0.0:
+                    offset *= (distance - return_step) / distance
+                    all_nominal = False
+                targets[name] = self._nominal_feet[name] + offset.copy()
+            if all_nominal:
+                self._time = 0.0
+                self._phase = 0.0
+            return targets
+
+        cycle_finished = False
+        if self._finishing_cycle:
+            remaining = self.stride_duration - self._time
+            self._time += min(dt, remaining)
+            cycle_finished = self._time >= self.stride_duration - 1.0e-12
+            self._phase = (self._time / self.stride_duration) % 1.0
+        else:
+            reference_phase = self.leg_phase('front_left')
+            touchdown = (
+                reference_phase.in_swing
+                and reference_phase.normalized >= 0.9
+                and bool(contact_state['front_left'])
+            )
+            if touchdown:
+                self.reset()
+            else:
+                self._time = (self._time + dt) % self.stride_duration
+                self._phase = self._time / self.stride_duration
 
         linear_half_step = 0.5 * speed * self.parameters.stance_duration
         linear_direction = math.atan2(velocity[1], velocity[0]) if speed else 0.0
@@ -265,4 +314,10 @@ class GaitGenerator:
             targets[name] = self._nominal_feet[name] + self._trajectory_offset(
                 name, self.leg_phase(name), linear_half_step,
                 linear_direction, yaw_half_step)
+        if cycle_finished:
+            self._time = 0.0
+            self._phase = 0.0
+            self._last_linear_velocity.fill(0.0)
+            self._last_yaw_rate = 0.0
+            self._finishing_cycle = False
         return targets

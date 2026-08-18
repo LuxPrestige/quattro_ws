@@ -63,7 +63,9 @@ private:
   std::chrono::steady_clock::time_point last_write_{};
   double motor_velocity_limit_{50.0};
   double motor_current_limit_{20.0};
+  std::chrono::milliseconds engagement_duration_{1000};
   bool active_{false};
+  bool position_limits_enabled_{false};
 };
 
 }  // namespace quattro_hardware

@@ -932,6 +932,42 @@ docker compose up -d dev
 docker compose exec dev bash
 ```
 
+### IMU 및 조이스틱 장치 전달
+
+BNO085 IMU의 `/dev/i2c-1`과 조이스틱의 `/dev/input`을 컨테이너에서
+사용할 때는 `compose.hardware.yaml`을 함께 적용한다. 호스트의 `input`
+그룹 GID를 전달한 뒤 컨테이너를 생성하거나 다시 생성한다.
+
+```bash
+cd ~/lgh_ws
+
+INPUT_GID=$(getent group input | cut -d: -f3) \
+docker compose \
+  -f compose.yaml \
+  -f compose.hardware.yaml \
+  up -d --force-recreate dev
+```
+
+하드웨어 설정이 적용된 컨테이너에는 다음 명령으로 진입한다.
+
+```bash
+docker compose \
+  -f compose.yaml \
+  -f compose.hardware.yaml \
+  exec dev bash
+```
+
+컨테이너 내부에서 장치 전달 여부를 확인한다.
+
+```bash
+ls -l /dev/i2c-1
+ls -l /dev/input/js0
+```
+
+`docker compose up -d dev`처럼 기본 `compose.yaml`만 사용하면 IMU와
+조이스틱 장치가 컨테이너에 전달되지 않는다. 실제 하드웨어 작업에서는
+항상 `compose.hardware.yaml`을 함께 지정한다.
+
 ### 데스크톱 NVIDIA GPU 사용
 
 Gazebo와 RViz2를 데스크톱 Linux에서 실행할 때는 NVIDIA GPU 하드웨어
