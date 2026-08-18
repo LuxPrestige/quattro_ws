@@ -1,99 +1,184 @@
 # Quattro 실기 Bringup
 
-실기 bringup은 모터, BNO085 IMU, Switch Pro Controller, gait controller와
-`ros2_control` controller를 함께 실행한다.
+## 목적
 
-## 안전 확인
+실제 Quattro 하드웨어에서 다음 구성요소를 함께 실행한다.
 
-실행 전에 다음 조건을 모두 확인한다.
+- GIM6010-8 × 12 / GDS68
+- `quattro_hardware::QuattroSystem`
+- `joint_state_broadcaster`
+- `joint_trajectory_controller`
+- BNO085 IMU
+- Switch Pro Controller teleop
+- gait controller
+
+하드웨어 구조와 CAN 규칙은 `docs/gim6010_hardware.md`를 먼저 확인한다.
+
+## 실행 전 안전 확인
 
 1. 로봇을 지지대에 올려 다리에 하중이 걸리지 않게 한다.
-2. 캘리브레이션 GUI와 다른 CAN 송신 프로그램을 모두 종료한다.
-3. `can0`과 `can1`이 모두 `500000 bit/s`, `ERROR-ACTIVE`인지 확인한다.
-4. 머신별 `calibration.yaml`에 12개 관절의 실제 offset이 저장되어 있는지 확인한다.
-5. 비상 전원 차단 수단을 준비한다.
+2. calibration GUI와 다른 CAN 송신 프로그램을 종료한다.
+3. 실제 `calibration.yaml`이 존재하고 12개 offset을 확인한다.
+4. `can0`, `can1`이 모두 500 kbit/s이며 `ERROR-ACTIVE`인지 확인한다.
+5. 전원과 E-stop 수단을 준비한다.
+6. 초기 시험은 낮은 gain/current 조건에서 수행한다.
 
-CAN 상태 확인:
+CAN 상태:
 
 ```bash
 ip -details -statistics link show can0
 ip -details -statistics link show can1
 ```
 
-## 실행
+## Docker
 
-Docker 컨테이너 안에서 실행한다.
+Raspberry Pi 하드웨어 장치 전달은 `docs/development_environment.md`를 따른다.
+
+컨테이너 내부에서:
 
 ```bash
 cd /ws
 source /opt/ros/jazzy/setup.bash
 source /ws/install/setup.bash
+```
 
+## 실행
+
+```bash
 ros2 launch quattro_bringup hardware.launch.py \
   calibration_file:=/ws/src/quattro_bringup/config/calibration.yaml
 ```
 
-기본값으로 IMU와 joystick을 실행한다. 실기 launch에는 RViz2 노드가 포함되지
-않는다. 선택적으로 다음 인자를 사용할 수 있다.
+선택 인자:
 
 ```bash
 ros2 launch quattro_bringup hardware.launch.py \
   calibration_file:=/ws/src/quattro_bringup/config/calibration.yaml \
   use_imu:=true \
-  use_teleop:=true
+  use_teleop:=true \
+  initial_pose_duration:=5.0
 ```
 
-## 시작 동작
+현재 launch 기본값은 IMU와 teleop을 모두 실행한다.
 
-`controller_manager`는 `QuattroSystem`을 inactive 상태로 로드한다. 이어서
-`hardware_spawner --activate QuattroSystem`이 실제 encoder 위치를 읽는다.
-12개 모터를 각자의 최신 위치에서 Kp=0으로 활성화한 뒤 위치를 다시 읽는다.
-현재 위치를 유지하면서 Kp를 1초 동안 설정값까지 올리고, 12개 관절을 동시에
-최대 0.5 rad/s로 nominal 초기 위치까지 이동한다. 실제 위치가 목표의 ±0.03 rad
-안에 들어왔는지 확인하며, 한 관절이라도 30초 안에 도달하지 못하면 전체
-모터를 비활성화한다. 12축 동시 초기화가 끝난 다음
-`joint_state_broadcaster`와 `joint_trajectory_controller`가 차례로 활성화된다.
+## 현재 launch 순서
 
-실기 launch에서는 gait 출력을 활성 상태로 시작한다. controller가 활성화되면
-gait controller는 현재 관절 위치에서 nominal stance까지 2초 궤적을 한 번
-전송한다. 초기 자세 전환이 끝나면 100 Hz 명령을 시작한다. teleop stepping
-모드는 비활성 상태로 시작하며 Switch Pro Controller의 모드 전환 버튼으로
-활성화한다.
+`hardware.launch.py`의 실행 흐름은 다음과 같다.
 
-## 100 Hz 제어 주기
+```text
+robot_state_publisher
+controller_manager
+        ↓
+hardware_spawner --activate QuattroSystem
+        ↓
+joint_state_broadcaster
+        ↓
+joint_trajectory_controller
+        ↓
+gait_controller
+```
 
-다음 주기는 100 Hz로 설정된다.
+IMU와 joystick/teleop 노드는 조건에 따라 병렬로 시작한다.
 
-- `controller_manager.update_rate`: 100 Hz
-- `gait_controller.control_frequency`: 100 Hz
-- `joint_trajectory_controller.state_publish_rate`: 100 Hz
-- 하드웨어 `read()` / `write()`: controller manager update마다 한 번
-- 각 모터의 MIT position command: hardware `write()`에서 100 Hz
+`controller_manager`가 종료되면 전체 launch도 종료한다.
 
-설정 파일은
-`src/quattro_bringup/config/hardware_controllers.yaml`이다. 실기 launch도
-`update_rate=100`을 명시적으로 전달하므로 다른 controller YAML을 지정해도
-controller manager 주기는 100 Hz로 유지된다.
+## QuattroSystem 활성화
 
-실행 후 다음을 확인한다.
+현재 하드웨어 계층은 활성화 과정에서 다음 원칙을 사용한다.
+
+1. CAN motor mapping 구성
+2. encoder feedback 확인
+3. motor enable
+4. 최신 motor position에서 hold
+5. Kp를 점진적으로 적용
+6. heartbeat와 closed-loop state 확인
+7. 상위 controller 사용 가능 상태로 전환
+
+한 모터라도 startup 조건을 만족하지 못하면 safe stop으로 전환한다.
+
+## 초기 자세
+
+`gait_controller`는 controller 활성화 후 `initial_pose_duration`을 사용해 초기 자세 trajectory를 처리한다.
+
+현재 `hardware.launch.py` 기본값:
+
+```text
+initial_pose_duration = 5.0 s
+```
+
+초기 자세 transition 로직을 변경할 때는 gait controller와 하드웨어 Safe Start를 별개의 단계로 유지한다.
+
+## Teleop 시작 상태
+
+현재 `hardware.launch.py`는 `quattro_teleop`에 다음 값을 전달한다.
+
+```text
+start_stepping = true
+```
+
+따라서 문서나 설정을 변경할 때 실제 launch 코드와 일치시킨다.
+
+## 제어 주기
+
+현재 controller manager 설정:
+
+```text
+update_rate = 100 Hz
+```
+
+`quattro_hardware::read()` / `write()`는 controller manager update마다 실행된다.
+
+실제 주기가 안정적인지는 다음과 같이 확인한다.
 
 ```bash
-ros2 control list_controllers
 ros2 topic hz /joint_states
 ros2 topic hz /joint_trajectory_controller/joint_trajectory
 ros2 topic hz /imu/data
 ```
 
-정상 상태:
+## 정상 상태 확인
 
-- `joint_state_broadcaster`: `active`
-- `joint_trajectory_controller`: `active`
-- `/joint_states`: 약 100 Hz
-- 초기 자세 전환 후 joint trajectory: 약 100 Hz
-- BNO085 사용 시 `/imu/data`: 약 100 Hz
+```bash
+ros2 control list_hardware_components
+ros2 control list_controllers
+```
+
+최소 정상 조건:
+
+- `QuattroSystem`: active
+- `joint_state_broadcaster`: active
+- `joint_trajectory_controller`: active
+- `/joint_states`: 실제 motor feedback 기반
+- CAN bus: `ERROR-ACTIVE`
+
+## 하드웨어 fault 확인
+
+다음 로그는 의미가 다르므로 구분한다.
+
+```text
+Hardware command watchdog expired
+Stale feedback from ...
+Stale heartbeat from ...
+Motor left closed-loop control ...
+Motor fault details ...
+```
+
+CAN 통신 자체를 조사할 때는 동시에 다음을 확인한다.
+
+```bash
+candump -e -tz can0
+candump -e -tz can1
+
+ip -details -statistics link show can0
+ip -details -statistics link show can1
+```
+
+단순 stale feedback과 GDS68 자체 fault를 동일한 원인으로 단정하지 않는다.
 
 ## 종료
 
-`Ctrl+C`로 launch를 종료한다. `controller_manager`가 종료되면
-`QuattroSystem`은 모든 모터에 safe stop을 적용한다. CAN 오류, stale feedback,
-command watchdog 또는 잘못된 관절 명령이 감지되어도 전체 모터를 비활성화한다.
+`Ctrl+C` 또는 controller manager 종료 시 하드웨어 lifecycle이 종료되며 safe stop을 수행한다.
+
+fault/timeout이 발생했을 때도 정의된 안전 정책에 따라 모터를 비활성화한다.
+
+실제 fault 분석 중에는 로그와 CAN 상태를 먼저 저장하고, 원인 정보를 읽기 전에 무조건 error clear를 반복하지 않는다.
