@@ -31,6 +31,22 @@ def ramp_value(
     return current + math.copysign(step, difference)
 
 
+def staged_joint_targets(
+        current: list[float], target: list[float],
+        joints_per_stage: int = 3) -> list[list[float]]:
+    """Build targets that move one contiguous joint group per stage."""
+    if (len(current) != len(target) or not current or
+            joints_per_stage <= 0 or len(current) % joints_per_stage != 0):
+        raise ValueError('invalid staged joint target dimensions')
+    staged = list(current)
+    targets = []
+    for start in range(0, len(staged), joints_per_stage):
+        staged[start:start + joints_per_stage] = target[
+            start:start + joints_per_stage]
+        targets.append(list(staged))
+    return targets
+
+
 class GaitController(Node):
     """Run a safe, timeout-aware trot trajectory generator."""
 
@@ -58,10 +74,15 @@ class GaitController(Node):
             'stop_ramp_rate', 0.3).value)
         self._initial_pose_duration = float(self.declare_parameter(
             'initial_pose_duration', 5.0).value)
+        self._staged_initial_pose = bool(self.declare_parameter(
+            'staged_initial_pose', False).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
         self._pid_ki = float(self.declare_parameter('pose_pid.ki', 0.1).value)
         start_enabled = bool(self.declare_parameter(
             'start_enabled', True).value)
+        trajectory_controller_name = str(self.declare_parameter(
+            'trajectory_controller_name',
+            'joint_trajectory_controller').value)
         self._pid_kd = float(self.declare_parameter('pose_pid.kd', 0.05).value)
         self._pid_limit = float(self.declare_parameter(
             'pose_pid.integral_limit', 0.5).value)
@@ -95,7 +116,8 @@ class GaitController(Node):
             name: False for name in self._kinematics.nominal_foot_positions}
         self._last_command_time = self.get_clock().now()
         self._publisher = self.create_publisher(
-            JointTrajectory, 'joint_trajectory_controller/joint_trajectory', 10)
+            JointTrajectory,
+            f'{trajectory_controller_name}/joint_trajectory', 10)
         self._subscription = self.create_subscription(
             Twist, 'cmd_vel', self._on_command, 10)
         self.create_subscription(
@@ -291,7 +313,21 @@ class GaitController(Node):
             start = JointTrajectoryPoint()
             start.positions = [
                 self._joint_positions[name] for name in trajectory.joint_names]
-            trajectory.points = [start, point]
+            trajectory.points = [start]
+            if self._staged_initial_pose:
+                staged_targets = staged_joint_targets(
+                    list(start.positions), list(point.positions))
+                for stage, target in enumerate(staged_targets, start=1):
+                    staged_point = JointTrajectoryPoint()
+                    staged_point.positions = target
+                    stage_time = stage * self._initial_pose_duration
+                    staged_point.time_from_start.sec = int(stage_time)
+                    staged_point.time_from_start.nanosec = int(
+                        (stage_time - int(stage_time)) * 1.0e9)
+                    trajectory.points.append(staged_point)
+                duration *= len(staged_targets)
+            else:
+                trajectory.points.append(point)
         else:
             trajectory.points = [point]
         self._publisher.publish(trajectory)

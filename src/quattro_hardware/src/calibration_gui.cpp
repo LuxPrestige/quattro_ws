@@ -322,7 +322,7 @@ private:
                 std::string("No encoder feedback was received from ") + kJoints[index].name + ".");
       }
       validatePreflight(motor, kJoints[index].name);
-      all_targets_[index] = motor.encoderEstimates().position;
+      all_targets_[index] = motor.encoderEstimates().output_position_rad;
       motor.sendMitCommand(
         {all_targets_[index], 0.0, config["kp"].as<double>(), config["kd"].as<double>(), 0.0});
     }
@@ -377,7 +377,7 @@ private:
     }
     validatePreflight(*motor_, kJoints[selected_index_].name);
 
-    target_ = motor_->encoderEstimates().position;
+    target_ = motor_->encoderEstimates().output_position_rad;
     motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
     motor_->enable();
     waitForClosedLoop(*motor_, *manager_, kJoints[selected_index_].name);
@@ -469,7 +469,7 @@ private:
     if (!motor.hasEncoderEstimates()) {
       throw std::runtime_error("Encoder feedback is unavailable.");
     }
-    return motor.encoderEstimates().position;
+    return motor.encoderEstimates().output_position_rad;
   }
 
   void jog(int joint_degrees)

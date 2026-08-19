@@ -1,63 +1,51 @@
 #include "gim6010_driver/can_diagnostics.hpp"
 
-#include <cstring>
-#include <stdexcept>
-
 namespace gim6010_driver
 {
 namespace
 {
-std::uint32_t littleEndianUint32(const std::uint8_t * data)
+int severity(CanBusState state)
 {
-  return static_cast<std::uint32_t>(data[0]) |
-         (static_cast<std::uint32_t>(data[1]) << 8U) |
-         (static_cast<std::uint32_t>(data[2]) << 16U) |
-         (static_cast<std::uint32_t>(data[3]) << 24U);
+  switch (state) {
+    case CanBusState::kErrorActive: return 0;
+    case CanBusState::kErrorWarning: return 1;
+    case CanBusState::kErrorPassive: return 2;
+    case CanBusState::kBusOff: return 3;
+  }
+  return 0;
 }
 }  // namespace
 
-Heartbeat decodeHeartbeat(const std::uint8_t * data, std::size_t length)
+void recordCanError(CanErrorStatus & status, const DecodedCanError & error)
 {
-  if (data == nullptr || length != 8U) {
-    throw std::invalid_argument("GIM6010 heartbeat requires 8 bytes");
+  ++status.total_frames;
+  if (error.ack_error) {++status.ack_error_frames;}
+  if (error.has_counters) {
+    status.tx_error_counter = error.tx_error_counter;
+    status.rx_error_counter = error.rx_error_counter;
   }
-  return Heartbeat{
-    littleEndianUint32(data), data[4], data[5], data[6], data[7]};
+
+  CanBusState observed = CanBusState::kErrorActive;
+  if (error.bus_off) {
+    ++status.bus_off_frames;
+    observed = CanBusState::kBusOff;
+  } else if (error.error_passive) {
+    ++status.passive_frames;
+    observed = CanBusState::kErrorPassive;
+  } else if (error.error_warning) {
+    ++status.warning_frames;
+    observed = CanBusState::kErrorWarning;
+  }
+  // State only escalates: once bus-off/passive is seen it stays sticky until
+  // the caller rebuilds the MotorManager (e.g. during Safe Start reconfigure).
+  if (severity(observed) > severity(status.state)) {
+    status.state = observed;
+  }
 }
 
-std::uint64_t decodeError(const std::uint8_t * data, std::size_t length, ErrorType type)
+void recordCanRxDrop(CanErrorStatus & status) noexcept
 {
-  const std::size_t expected_length = type == ErrorType::kMotor ? 8U : 4U;
-  if (data == nullptr || length < expected_length) {
-    throw std::invalid_argument("GIM6010 error response has invalid length");
-  }
-  std::uint64_t value = 0;
-  for (std::size_t index = 0; index < expected_length; ++index) {
-    value |= static_cast<std::uint64_t>(data[index]) << (8U * index);
-  }
-  return value;
-}
-
-BusVoltageCurrent decodeBusVoltageCurrent(const std::uint8_t * data, std::size_t length)
-{
-  if (data == nullptr || length != 8U) {
-    throw std::invalid_argument("GIM6010 bus voltage/current response requires 8 bytes");
-  }
-  BusVoltageCurrent result;
-  std::memcpy(&result.voltage, data, sizeof(float));
-  std::memcpy(&result.current, data + sizeof(float), sizeof(float));
-  return result;
-}
-
-IqFeedback decodeIqFeedback(const std::uint8_t * data, std::size_t length)
-{
-  if (data == nullptr || length != 8U) {
-    throw std::invalid_argument("GIM6010 Iq response requires 8 bytes");
-  }
-  IqFeedback result;
-  std::memcpy(&result.setpoint, data, sizeof(float));
-  std::memcpy(&result.measured, data + sizeof(float), sizeof(float));
-  return result;
+  ++status.rx_dropped_frames;
 }
 
 }  // namespace gim6010_driver

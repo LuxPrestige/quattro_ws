@@ -1,19 +1,21 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>gim6010_driver</name>
+  <name>quattro_controllers</name>
   <version>0.1.0</version>
-  <description>
-    Low-level SocketCAN/CAN Simple driver for the SteadyWin GIM6010-8 + GDS68,
-    supporting Direct Position/Velocity/Torque and MIT control. No ROS or
-    Quattro joint/URDF dependency.
-  </description>
+  <description>ros2_control controllers for Quattro hardware command modes</description>
   <maintainer email="ros@todo.todo">ros</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>controller_interface</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>realtime_tools</depend>
+  <depend>trajectory_msgs</depend>
 
-  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

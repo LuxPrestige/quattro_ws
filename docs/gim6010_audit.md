@@ -4,6 +4,20 @@
 
 2026-08-19 기준 GDS68 rev2.2 제조사 매뉴얼, 현재 코드, Xacro, bringup, calibration GUI와 테스트를 대조했다. 정적 감사 및 가상 검증 기록이며 실기 검증 완료 기록이 아니다.
 
+## 2026-08-19 재감사 (Secondary encoder / Get_Error 재검토)
+
+매뉴얼 rev2.2 96페이지 전체를 다시 대조했다.
+
+| 파일 | 문제 | 위험 | 수정 |
+|---|---|---|---|
+| `gds68_protocol.*` | `Get_Error(0x03)` 응답을 "byte0=echoed type, bytes1-4=uint32"로 가정 | 매뉴얼 실제 형식(응답에 type tag 없음, motor는 uint64/8byte, 나머지는 uint32/4byte)과 달라 모든 fault 진단 값이 항상 잘못 decode됨 | `decodeGetErrorResponse(ErrorType, data, length)`로 변경, `Gim6010Motor`가 요청 순서를 큐로 추적해 응답에 귀속 |
+| `types.hpp` | `ErrorType` enum이 0/1/2/3 순차값 | 매뉴얼 Error_Type은 0/1/3/4(2 없음)라서 `kController`/`kSystem` 요청이 잘못된 카테고리를 조회함 | 명시적 값 `kMotor=0, kEncoder=1, kController=3, kSystem=4`로 수정 |
+| `docs/gim6010_hardware.md` 11절 | "secondary encoder 값을 매뉴얼만으로 확정할 수 없다"고 hedge | 실제로는 BOM과 전체 CAN 명령 목록으로 확정 가능한 사실을 미확정으로 남겨둠 | BOM(인코더 칩 1개)과 CAN 명령 전체 목록(두 번째 인코더 read 명령 없음)을 근거로 "secondary encoder는 존재하지 않는다"로 확정 서술 |
+
+### 새로 확정된 위험: 전원 재인가 후 멀티턴 위치 모호성
+
+로터 단일회전 절대 인코더(14-bit) + 8:1 기어비 조합에서, 로터 절대각 하나만으로 알 수 있는 출력축 위치는 45°(`360°/8`) 간격으로 반복된다. 실제 `quattro.urdf.xacro`의 관절 가동범위(hip 약 119°, upper/lower_leg 약 239~256°)는 전부 45°보다 훨씬 넓으므로, **재부팅 후 로터 절대각만으로는 관절이 가동범위 내 어느 45° 구간에 있는지 원리적으로 구분되지 않는다.** GDS68 펌웨어가 전원 차단 중에도 로터 회전수를 비휘발성으로 보존하는지는 매뉴얼에 명시되어 있지 않다. `docs/gim6010_hardware.md` 11절에 상세를 기록했다. 이 프로젝트는 이 모호성을 소프트웨어로 해소하지 않으며, 대신 "fresh feedback 없이는 startup 실패", "활성화 직후 target을 항상 그 순간 위치로 초기화", "실기 절차상 단일 모터·저gain부터 확대"로 위험을 완화한다.
+
 ## Critical
 
 | 파일 | 문제 | 위험 | 수정 |
@@ -42,8 +56,8 @@
 ## 남은 실기 게이트
 
 - 모든 GDS68 firmware가 heartbeat `0.5.13+` 형식인지 확인
-- secondary encoder가 실제 firmware에서 선택된 feedback source인지 확인
-- RTR `0x009`, `0x017` 응답과 error query를 단일 모터에서 확인
+- GDS68 펌웨어가 전원 차단 중에도 로터 멀티턴 카운트를 비휘발성으로 보존하는지 확인 (위 "새로 확정된 위험" 참고 — secondary encoder가 아니라 이 프로젝트가 실제로 의존하는 유일한 인코더의 재부팅 안정성 문제)
+- RTR `0x009`, `0x00A`, `0x017`과 corrected `0x003` error query를 단일 모터에서 확인
 - CAN adapter/kernel 조합의 warning/passive/bus-off/ACK/error counter 확인
 - Position 내부 gain의 실제 장치 값과 안정성 측정
 - undervoltage/overvoltage/overcurrent/encoder/controller fault injection

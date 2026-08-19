@@ -16,18 +16,12 @@ services:
     working_dir: /ws
 
     environment:
-      DISPLAY: ${DISPLAY:-}
-      XAUTHORITY: /tmp/.host-Xauthority
-      QT_X11_NO_MITSHM: "1"
-
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       ROS_AUTOMATIC_DISCOVERY_RANGE: SUBNET
       PYTHONUNBUFFERED: "1"
 
     volumes:
       - .:/ws
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ${XAUTHORITY}:/tmp/.host-Xauthority:ro
 
     stdin_open: true
     tty: true

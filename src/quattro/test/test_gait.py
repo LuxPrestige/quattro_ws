@@ -4,8 +4,26 @@ import numpy as np
 import pytest
 
 from quattro.gait import GaitGenerator, GaitParameters
-from quattro.gait_controller import ramp_value
+from quattro.gait_controller import ramp_value, staged_joint_targets
 from quattro.kinematics import LEG_NAMES, QuadrupedKinematics
+
+
+def test_staged_joint_targets_move_one_leg_at_a_time():
+    current = list(range(12))
+    target = [value + 100 for value in current]
+
+    stages = staged_joint_targets(current, target)
+
+    assert len(stages) == 4
+    assert stages[0] == target[:3] + current[3:]
+    assert stages[1] == target[:6] + current[6:]
+    assert stages[2] == target[:9] + current[9:]
+    assert stages[3] == target
+
+
+def test_staged_joint_targets_reject_invalid_dimensions():
+    with pytest.raises(ValueError):
+        staged_joint_targets([0.0], [0.0, 1.0])
 
 
 def test_stationary_command_returns_nominal_stance():

@@ -1,6 +1,8 @@
 #ifndef GIM6010_DRIVER__TYPES_HPP_
 #define GIM6010_DRIVER__TYPES_HPP_
 
+#include <cstdint>
+
 namespace gim6010_driver
 {
 
@@ -18,6 +20,23 @@ enum class PositionInputMode
   kDirect,
   kPositionFilter,
   kTrapezoidalTrajectory,
+};
+
+enum class AxisState : std::uint32_t
+{
+  kIdle = 1,
+  kClosedLoopControl = 8,
+};
+
+// Get_Error (0x03) category selector. Values match the manual's Error_Type
+// table exactly (index 2 is not assigned by the manual and is intentionally
+// absent here) -- do not renumber these as a plain sequential enum.
+enum class ErrorType : std::uint8_t
+{
+  kMotor = 0,
+  kEncoder = 1,
+  kController = 3,
+  kSystem = 4,
 };
 
 struct PositionControlGains

@@ -22,7 +22,6 @@ __pycache__/
 .DS_Store
 
 # Local hardware calibration
-src/quattro_bringup/config/calibration.yaml
 src/quattro_bringup/config/motor_ids.yaml
 
 # Runtime logs and bags

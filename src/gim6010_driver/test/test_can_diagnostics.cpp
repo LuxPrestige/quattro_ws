@@ -1,47 +1,120 @@
-#include <array>
-#include <cstdint>
+#include <gtest/gtest.h>
 
 #include "gim6010_driver/can_diagnostics.hpp"
-#include "gtest/gtest.h"
+#include "gim6010_driver/can_error.hpp"
 
-TEST(CanDiagnostics, DecodesFirmware0513Heartbeat)
+namespace
 {
-  const std::array<std::uint8_t, 8> data{{0x40, 0x00, 0x00, 0x00, 0x01, 0x89, 0x00, 0xF4}};
-  const auto heartbeat = gim6010_driver::decodeHeartbeat(data.data(), data.size());
-  EXPECT_EQ(heartbeat.axis_error, 0x40U);
-  EXPECT_EQ(heartbeat.axis_state, 1U);
-  EXPECT_EQ(heartbeat.flags, 0x89U);
-  EXPECT_EQ(heartbeat.life, 0xF4U);
+// linux/can/error.h class flags used to build synthetic error frames.
+constexpr std::uint32_t kErrCrtl = 0x00000004U;
+constexpr std::uint32_t kErrAck = 0x00000020U;
+constexpr std::uint32_t kErrBusoff = 0x00000040U;
+constexpr std::uint32_t kErrCnt = 0x00000200U;
+constexpr std::uint8_t kCrtlRxWarning = 0x04U;
+constexpr std::uint8_t kCrtlRxPassive = 0x10U;
+
+gim6010_driver::CanFrame makeErrorFrame(std::uint32_t id_flags)
+{
+  gim6010_driver::CanFrame frame;
+  frame.error = true;
+  frame.id = id_flags;
+  frame.dlc = 8;
+  return frame;
+}
+}  // namespace
+
+TEST(CanErrorDecode, ClassifiesBusOffAndAck)
+{
+  const auto frame = makeErrorFrame(kErrBusoff | kErrAck);
+  const auto decoded = gim6010_driver::decodeErrorFrame(frame);
+  EXPECT_TRUE(decoded.bus_off);
+  EXPECT_TRUE(decoded.ack_error);
+  EXPECT_FALSE(decoded.error_warning);
+  EXPECT_FALSE(decoded.error_passive);
 }
 
-TEST(CanDiagnostics, DecodesDetailedErrorsLittleEndian)
+TEST(CanErrorDecode, ClassifiesControllerWarning)
 {
-  const std::array<std::uint8_t, 8> motor{{0x00, 0x00, 0x00, 0x01, 0, 0, 0, 0}};
-  const std::array<std::uint8_t, 4> system{{0x02, 0x00, 0x00, 0x00}};
-  EXPECT_EQ(
-    gim6010_driver::decodeError(
-      motor.data(), motor.size(), gim6010_driver::ErrorType::kMotor),
-    0x01000000U);
-  EXPECT_EQ(
-    gim6010_driver::decodeError(
-      system.data(), system.size(), gim6010_driver::ErrorType::kSystem),
-    0x02U);
+  auto frame = makeErrorFrame(kErrCrtl);
+  frame.data[1] = kCrtlRxWarning;
+  const auto decoded = gim6010_driver::decodeErrorFrame(frame);
+  EXPECT_TRUE(decoded.error_warning);
+  EXPECT_FALSE(decoded.error_passive);
+  EXPECT_FALSE(decoded.bus_off);
 }
 
-TEST(CanDiagnostics, DecodesBusVoltageAndCurrent)
+TEST(CanErrorDecode, ClassifiesControllerPassive)
 {
-  const std::array<std::uint8_t, 8> data{{0xA8, 0x05, 0xC0, 0x41, 0, 0, 0, 0}};
-  const auto bus = gim6010_driver::decodeBusVoltageCurrent(data.data(), data.size());
-  EXPECT_NEAR(bus.voltage, 24.003, 0.001);
-  EXPECT_FLOAT_EQ(bus.current, 0.0F);
+  auto frame = makeErrorFrame(kErrCrtl);
+  frame.data[1] = kCrtlRxPassive;
+  const auto decoded = gim6010_driver::decodeErrorFrame(frame);
+  EXPECT_TRUE(decoded.error_passive);
+  EXPECT_FALSE(decoded.error_warning);
 }
 
-TEST(CanDiagnostics, DecodesIqSetpointAndMeasurement)
+TEST(CanErrorDecode, ExtractsErrorCountersWhenPresent)
 {
-  const std::array<std::uint8_t, 8> data{{0x00, 0x00, 0xA0, 0x3F, 0x00, 0x00, 0x20, 0xC0}};
-  const auto iq = gim6010_driver::decodeIqFeedback(data.data(), data.size());
-  EXPECT_FLOAT_EQ(iq.setpoint, 1.25F);
-  EXPECT_FLOAT_EQ(iq.measured, -2.5F);
-  EXPECT_THROW(gim6010_driver::decodeIqFeedback(data.data(), 4U), std::invalid_argument);
-  EXPECT_THROW(gim6010_driver::decodeIqFeedback(nullptr, data.size()), std::invalid_argument);
+  auto frame = makeErrorFrame(kErrCnt);
+  frame.data[6] = 3;
+  frame.data[7] = 5;
+  const auto decoded = gim6010_driver::decodeErrorFrame(frame);
+  ASSERT_TRUE(decoded.has_counters);
+  EXPECT_EQ(decoded.tx_error_counter, 3U);
+  EXPECT_EQ(decoded.rx_error_counter, 5U);
+}
+
+TEST(CanDiagnostics, StateEscalatesButNeverDowngradesWithinAStatus)
+{
+  gim6010_driver::CanErrorStatus status;
+  EXPECT_EQ(status.state, gim6010_driver::CanBusState::kErrorActive);
+
+  gim6010_driver::DecodedCanError warning;
+  warning.error_warning = true;
+  gim6010_driver::recordCanError(status, warning);
+  EXPECT_EQ(status.state, gim6010_driver::CanBusState::kErrorWarning);
+  EXPECT_EQ(status.warning_frames, 1U);
+
+  gim6010_driver::DecodedCanError passive;
+  passive.error_passive = true;
+  gim6010_driver::recordCanError(status, passive);
+  EXPECT_EQ(status.state, gim6010_driver::CanBusState::kErrorPassive);
+  EXPECT_EQ(status.passive_frames, 1U);
+
+  // A later warning-level frame is still counted, but must not pull the
+  // sticky state back down from the worse passive condition already seen.
+  gim6010_driver::recordCanError(status, warning);
+  EXPECT_EQ(status.state, gim6010_driver::CanBusState::kErrorPassive);
+  EXPECT_EQ(status.warning_frames, 2U);
+
+  EXPECT_EQ(status.total_frames, 3U);
+}
+
+TEST(CanDiagnostics, BusOffIsTheMostSevereState)
+{
+  gim6010_driver::CanErrorStatus status;
+  gim6010_driver::DecodedCanError bus_off;
+  bus_off.bus_off = true;
+  gim6010_driver::recordCanError(status, bus_off);
+  EXPECT_EQ(status.state, gim6010_driver::CanBusState::kBusOff);
+  EXPECT_EQ(status.bus_off_frames, 1U);
+}
+
+TEST(CanDiagnostics, RecordsErrorCounterSnapshot)
+{
+  gim6010_driver::CanErrorStatus status;
+  gim6010_driver::DecodedCanError counters;
+  counters.has_counters = true;
+  counters.tx_error_counter = 10;
+  counters.rx_error_counter = 20;
+  gim6010_driver::recordCanError(status, counters);
+  EXPECT_EQ(status.tx_error_counter, 10U);
+  EXPECT_EQ(status.rx_error_counter, 20U);
+}
+
+TEST(CanDiagnostics, RecordCanRxDropIncrementsCounter)
+{
+  gim6010_driver::CanErrorStatus status;
+  gim6010_driver::recordCanRxDrop(status);
+  gim6010_driver::recordCanRxDrop(status);
+  EXPECT_EQ(status.rx_dropped_frames, 2U);
 }

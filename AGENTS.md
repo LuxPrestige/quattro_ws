@@ -12,7 +12,7 @@
 - 기본 실행 환경: Docker, 컨테이너 내부 `/ws`
 - SBC: Raspberry Pi 5
 - 액추에이터: SteadyWin GIM6010-8 × 12
-- 드라이버: GDS68 + secondary encoder
+- 드라이버: GDS68 (온보드 인코더는 MA732 14-bit single-turn absolute 1개뿐 — secondary encoder 없음, `docs/gim6010_hardware.md` 11절)
 - 모터 통신: Linux SocketCAN / CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - 기본 CAN bitrate: `500000`
 - IMU: BNO085
@@ -59,19 +59,6 @@ quattro
 
 `gim6010_driver`가 `quattro_hardware` 또는 `quattro`에 의존해서는 안 된다.
 
-## 하드웨어 안전 불변조건
-
-실제 모터를 다루는 변경에서는 다음을 반드시 지킨다.
-
-- 활성화 전에 최신 encoder feedback을 확인한다.
-- 시작 시 임의의 목표 위치를 바로 보내지 않고 현재 위치 hold에서 시작한다.
-- position, velocity, torque, Kp, Kd 및 node ID 범위를 검증한다.
-- command timeout과 stale feedback을 검출한다.
-- 종료, fault, 통신 장애 시 정의된 safe stop으로 전환한다.
-- 실제 `/joint_states`는 명령값이 아니라 모터 feedback을 나타내야 한다.
-- 단일 모터 검증 없이 12축 전체 시험으로 바로 확대하지 않는다.
-- fault 원인 조사 중에는 가능한 경우 오류 정보를 읽기 전에 무조건 `clearErrors()`부터 호출하지 않는다.
-- 전류 제한, gain, timeout 값은 실제 하드웨어 사양과 시험 결과를 근거로 정한다.
 
 CAN ID 기준은 `0~5 -> can0`, `6~11 -> can1`이다. 상세 매핑은 `docs/gim6010_hardware.md`를 따른다.
 

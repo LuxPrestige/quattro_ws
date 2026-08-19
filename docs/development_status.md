@@ -78,7 +78,9 @@ src/
 - Position Filter/Trapezoidal input mode와 runtime controller gain 설정
 - heartbeat decode
 - error/bus voltage/q-axis current diagnostics
-- encoder estimates
+- encoder estimates (`0x009`, runtime의 유일한 위치/속도 source)
+- encoder count 조회 (`0x00A`, startup 진단 전용, runtime feedback에 미사용)
+- `Get_Error(0x003)` 카테고리별 응답 폭(motor uint64 / 나머지 uint32)과 무응답-tag 구조를 반영한 요청 큐 기반 매칭
 - 단일 GIM6010 motor abstraction
 - 다중 motor routing
 
@@ -91,6 +93,7 @@ src/
 - 현재 위치 hold
 - Direct Position enable 전 current-position target 준비
 - MIT 전용 5-command-interface와 Kp engagement
+- MIT `JointTrajectory` controller와 Direct Position 선택형 bringup
 - `read()` / `write()`
 - feedback timeout
 - heartbeat timeout
@@ -106,14 +109,16 @@ src/
 - controller manager
 - hardware spawner
 - `joint_state_broadcaster`
-- `joint_trajectory_controller`
+- 기본 `mit_trajectory_controller` (Direct Position 선택 시 `joint_trajectory_controller`)
 - IMU/teleop/gait controller 실행 조합
 - remote visualization 관련 launch
+- `hardware_control_method` 기본값 `mit`, `motor_activation_interval_ms` 기본값 `100`
+- launch 시점에 `calibration_file`의 joint별 `kp`/`kd`를 읽어 `mit_trajectory_controller` 파라미터에 주입 (읽기 실패 시 `hardware_controllers_mit.yaml`의 값으로 대체)
 
 ## 현재 하드웨어 구성
 
-- SteadyWin GIM6010-8 × 12
-- GDS68 + secondary encoder
+- SteadyWin GIM6010-8 × 12 (온보드 인코더 1개, secondary encoder 없음 — `docs/gim6010_hardware.md` 11절)
+- GDS68
 - CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - `can0`: CAN ID 0~5
 - `can1`: CAN ID 6~11

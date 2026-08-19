@@ -5,11 +5,12 @@
     name="calibration_file"
     default="../config/calibration.yaml"/>
   <xacro:arg name="simulation" default="false"/>
-  <xacro:arg name="hardware_control_method" default="direct_position"/>
+  <xacro:arg name="hardware_control_method" default="mit"/>
   <xacro:arg name="apply_position_gains" default="false"/>
   <xacro:arg name="position_gain" default="0.0"/>
   <xacro:arg name="velocity_gain" default="0.0"/>
   <xacro:arg name="velocity_integrator_gain" default="0.0"/>
+  <xacro:arg name="motor_activation_interval_ms" default="100"/>
   <xacro:arg
     name="simulation_controllers"
     default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
@@ -67,8 +68,8 @@
       <xacro:if value="${hardware_control_method == 'mit'}">
         <command_interface name="position"><param name="min">${lower}</param><param name="max">${upper}</param></command_interface>
         <command_interface name="velocity"><param name="min">-4.0</param><param name="max">4.0</param></command_interface>
-        <command_interface name="kp"><param name="min">0.0</param><param name="max">500.0</param></command_interface>
-        <command_interface name="kd"><param name="min">0.0</param><param name="max">5.0</param></command_interface>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
         <command_interface name="effort"><param name="min">-10.0</param><param name="max">10.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_control_method == 'direct_velocity'}">
@@ -91,6 +92,7 @@
       <param name="direction">${hardware_calibration[name]['direction']}</param>
       <param name="offset">${hardware_calibration[name]['offset']}</param>
       <param name="gear_ratio">8.0</param>
+      <param name="current_limit">${hardware_calibration[name].get('current_limit', 5.0)}</param>
       <param name="mit_kp">${hardware_calibration[name]['kp']}</param>
       <param name="mit_kd">${hardware_calibration[name]['kd']}</param>
     </joint>
@@ -530,8 +532,10 @@
         <param name="velocity_gain">$(arg velocity_gain)</param>
         <param name="velocity_integrator_gain">$(arg velocity_integrator_gain)</param>
         <param name="feedback_timeout_ms">150</param>
+        <param name="feedback_request_period_ms">50</param>
         <param name="heartbeat_timeout_ms">400</param>
         <param name="startup_timeout_ms">1000</param>
+        <param name="motor_activation_interval_ms">$(arg motor_activation_interval_ms)</param>
         <param name="command_timeout_ms">250</param>
         <param name="scheduling_warning_ms">50</param>
         <param name="rotor_velocity_limit_rev_s">5.0</param>
