@@ -1,5 +1,9 @@
 # Quattro 관절 캘리브레이션
 
+## 상태
+
+`calibration_gui`는 `quattro_hardware` 재작성이 끝난 뒤 다시 구현될 도구다. `quattro_hardware`는 현재 코드가 없으므로(설계는 `docs/packages/quattro_hardware.md` 5절 참고) 이 문서의 실행 명령은 재작성 완료 후 목표 절차이며, 좌표 변환 식과 안전 절차는 계속 유효하다.
+
 ## 목적
 
 실제 GIM6010-8의 encoder 좌표를 ROS joint zero와 맞추기 위한 머신별 offset을 설정한다.
@@ -16,7 +20,7 @@
 src/quattro_bringup/config/calibration.yaml.example
 ```
 
-하드웨어 구조와 CAN 매핑은 `docs/gim6010_hardware.md`를 먼저 확인한다.
+하드웨어 구조와 CAN 매핑은 `docs/packages/quattro_hardware.md`(0절)를 먼저 확인한다.
 
 ## 좌표 변환
 
@@ -141,4 +145,4 @@ xacro src/quattro_description/urdf/quattro.urdf.xacro \
 check_urdf /tmp/quattro_calibrated.urdf
 ```
 
-실제 모터 bringup은 `docs/hardware_bringup.md`를 따른다.
+실제 모터 bringup은 `docs/packages/quattro_bringup.md`를 따른다.

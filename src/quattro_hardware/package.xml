@@ -3,28 +3,25 @@
 <package format="3">
   <name>quattro_hardware</name>
   <version>0.1.0</version>
-  <description>ros2_control hardware interface for the Quattro quadruped.</description>
+  <description>
+    ros2_control hardware layer connecting Quattro joints to real
+    GIM6010-8/GDS68 motors via gim6010_driver, plus the joint calibration GUI.
+  </description>
   <maintainer email="ros@todo.todo">ros</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
-  <depend>rclcpp</depend>
-  <depend>rclcpp_lifecycle</depend>
+  <depend>gim6010_driver</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
-  <depend>diagnostic_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>gim6010_driver</depend>
-  <depend>yaml_cpp_vendor</depend>
-  <depend>qtbase5-dev</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
 
   <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
-    <hardware_interface plugin="${prefix}/quattro_hardware.xml"/>
   </export>
 </package>

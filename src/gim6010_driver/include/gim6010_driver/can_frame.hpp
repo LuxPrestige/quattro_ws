@@ -2,23 +2,28 @@
 #define GIM6010_DRIVER__CAN_FRAME_HPP_
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 
 namespace gim6010_driver
 {
 
-// Classic (non-FD) CAN frame, transport-agnostic so protocol code can be unit
-// tested without a real SocketCAN interface.
+// Pure value type for a standard (11-bit) CAN frame. Never touches a socket
+// or a protocol field table by itself.
 struct CanFrame
 {
-  // 11-bit standard arbitration id. For a kernel error frame this instead
-  // holds the CAN_ERR_* flag word (see can_error.hpp).
-  std::uint32_t id{0};
-  std::uint8_t dlc{0};
-  std::array<std::uint8_t, 8> data{};
-  bool remote{false};
-  bool error{false};
+  uint32_t id{0};
+  uint8_t dlc{0};
+  std::array<uint8_t, 8> data{};
+  // Remote Transmission Request: used for read-only "Get_*" style requests
+  // that carry no payload of their own.
+  bool rtr{false};
+
+  bool operator==(const CanFrame & other) const noexcept
+  {
+    return id == other.id && dlc == other.dlc && rtr == other.rtr && data == other.data;
+  }
+
+  bool operator!=(const CanFrame & other) const noexcept { return !(*this == other); }
 };
 
 }  // namespace gim6010_driver

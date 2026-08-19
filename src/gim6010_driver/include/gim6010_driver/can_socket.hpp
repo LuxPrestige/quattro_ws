@@ -1,41 +1,62 @@
 #ifndef GIM6010_DRIVER__CAN_SOCKET_HPP_
 #define GIM6010_DRIVER__CAN_SOCKET_HPP_
 
-#include <chrono>
+#include <optional>
 #include <string>
 
 #include "gim6010_driver/can_frame.hpp"
+#include "gim6010_driver/types.hpp"
 
 namespace gim6010_driver
 {
 
-// RAII wrapper around one Linux SocketCAN raw socket. This is the only class
-// in the driver that touches the OS; everything above it (Gim6010Motor,
-// MotorManager) only exchanges CanFrame values so protocol logic stays
-// testable without a real interface.
+// RAII wrapper around one Linux SocketCAN raw socket bound to a single
+// interface (e.g. "can0"). Knows nothing about CAN Simple, MIT, or any
+// other GDS68 protocol detail -- it only moves CanFrame values in and out.
+//
+// Non-blocking, no CAN ID filters are installed: the interface's full
+// traffic is delivered and MotorManager routes by arbitration ID. With at
+// most a handful of motors per bus, filtering would save little and a
+// misconfigured filter would silently drop frames -- a worse failure mode.
 class CanSocket
 {
 public:
-  explicit CanSocket(const std::string & interface_name);
+  explicit CanSocket(std::string interface_name);
   ~CanSocket();
+
   CanSocket(const CanSocket &) = delete;
   CanSocket & operator=(const CanSocket &) = delete;
-  CanSocket(CanSocket &&) = delete;
-  CanSocket & operator=(CanSocket &&) = delete;
+  CanSocket(CanSocket && other) noexcept;
+  CanSocket & operator=(CanSocket && other) noexcept;
 
-  // Throws std::runtime_error if the frame cannot be written (e.g. TX queue
-  // full or interface down). Never blocks.
-  void send(const CanFrame & frame);
+  // Opens and binds the socket. Returns false (with no exception) on any
+  // failure -- interface missing, permission denied, etc. -- so callers can
+  // report the failure through their own error path instead of unwinding.
+  bool open();
+  void close();
+  bool is_open() const noexcept { return fd_ >= 0; }
 
-  // Waits up to `timeout` for one frame (data or kernel error frame).
-  // Returns false on timeout; throws std::runtime_error on socket failure.
-  bool receive(CanFrame & frame, std::chrono::milliseconds timeout);
+  // Returns false on send failure (would-block, interface down, ...). Never
+  // throws: this may be called from a real-time control loop.
+  bool send(const CanFrame & frame);
 
-  const std::string & interfaceName() const noexcept;
+  // Drains and returns the next queued data frame, if any. Error frames
+  // encountered along the way update bus_state()/poll_error_frame()
+  // internally and are not returned as data.
+  std::optional<CanFrame> receive_nonblocking();
+
+  // Returns and clears the most recent error frame observed since the last
+  // call, if any.
+  std::optional<CanBusError> poll_error_frame();
+
+  CanBusState bus_state() const noexcept { return bus_state_; }
+  const std::string & interface_name() const noexcept { return interface_name_; }
 
 private:
   std::string interface_name_;
   int fd_{-1};
+  CanBusState bus_state_{CanBusState::kActive};
+  std::optional<CanBusError> last_error_;
 };
 
 }  // namespace gim6010_driver

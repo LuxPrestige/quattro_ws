@@ -1,482 +1,338 @@
 #include "quattro_hardware/quattro_system.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <limits>
-#include <sstream>
+#include <set>
 #include <stdexcept>
 #include <thread>
-#include <unordered_set>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
-#include "quattro_hardware/joint_transform.hpp"
-#include "rclcpp/rclcpp.hpp"
 
 namespace quattro_hardware
 {
+
 namespace
 {
-constexpr auto kConfigureFrameInterval = std::chrono::milliseconds{2};
-constexpr std::uint8_t kClosedLoopControl = 8;
-constexpr std::uint8_t kHeartbeatFaultMask = 0x0F;
-constexpr double kTwoPi = 6.28318530717958647692;
 
-std::string hexValue(std::uint64_t value)
+constexpr std::chrono::milliseconds kPollInterval{5};
+
+bool get_required(
+  const std::unordered_map<std::string, std::string> & params, const std::string & key,
+  std::string & out, const rclcpp::Logger & logger)
 {
-  std::ostringstream stream;
-  stream << "0x" << std::hex << std::uppercase << value;
-  return stream.str();
+  const auto it = params.find(key);
+  if (it == params.end() || it->second.empty()) {
+    RCLCPP_ERROR(logger, "Missing required parameter '%s'", key.c_str());
+    return false;
+  }
+  out = it->second;
+  return true;
 }
 
-diagnostic_msgs::msg::KeyValue diagnosticValue(
-  const std::string & key, const std::string & value)
+bool parse_double_param(
+  const std::unordered_map<std::string, std::string> & params, const std::string & key,
+  double & out, const rclcpp::Logger & logger)
 {
-  diagnostic_msgs::msg::KeyValue result;
-  result.key = key;
-  result.value = value;
-  return result;
+  std::string text;
+  if (!get_required(params, key, text, logger)) {
+    return false;
+  }
+  try {
+    size_t consumed = 0;
+    const double value = std::stod(text, &consumed);
+    if (consumed != text.size()) {
+      throw std::invalid_argument("trailing characters");
+    }
+    out = value;
+  } catch (const std::exception &) {
+    RCLCPP_ERROR(logger, "Parameter '%s' is not a valid number: '%s'", key.c_str(), text.c_str());
+    return false;
+  }
+  return true;
 }
 
-std::string systemErrorName(std::uint64_t value)
+bool parse_bool_param(
+  const std::unordered_map<std::string, std::string> & params, const std::string & key,
+  bool & out, const rclcpp::Logger & logger)
 {
-  if ((value & 0x02U) != 0U) {return "DC_BUS_UNDER_VOLTAGE";}
-  if ((value & 0x04U) != 0U) {return "DC_BUS_OVER_VOLTAGE";}
-  if ((value & 0x08U) != 0U) {return "DC_BUS_OVER_REGEN_CURRENT";}
-  if ((value & 0x10U) != 0U) {return "DC_BUS_OVER_CURRENT";}
-  return value == 0U ? "OK" : "UNKNOWN_SYSTEM_ERROR";
+  std::string text;
+  if (!get_required(params, key, text, logger)) {
+    return false;
+  }
+  if (text == "true") {
+    out = true;
+  } else if (text == "false") {
+    out = false;
+  } else {
+    RCLCPP_ERROR(logger, "Parameter '%s' must be 'true' or 'false', got '%s'", key.c_str(), text.c_str());
+    return false;
+  }
+  return true;
 }
 
-double parameterDouble(
-  const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
-  double fallback)
+bool parse_ms_param(
+  const std::unordered_map<std::string, std::string> & params, const std::string & key,
+  std::chrono::milliseconds & out, const rclcpp::Logger & logger)
 {
-  const auto value = parameters.find(key);
-  return value == parameters.end() ? fallback : std::stod(value->second);
+  double value = 0.0;
+  if (!parse_double_param(params, key, value, logger)) {
+    return false;
+  }
+  if (value < 0.0) {
+    RCLCPP_ERROR(logger, "Parameter '%s' must not be negative, got %f", key.c_str(), value);
+    return false;
+  }
+  out = std::chrono::milliseconds(static_cast<long>(std::lround(value)));
+  return true;
 }
 
-long parameterLong(
-  const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
-  long fallback)
-{
-  const auto value = parameters.find(key);
-  return value == parameters.end() ? fallback : std::stol(value->second);
-}
-
-std::string parameterString(
-  const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
-  const std::string & fallback)
-{
-  const auto value = parameters.find(key);
-  return value == parameters.end() ? fallback : value->second;
-}
-
-bool parameterBool(
-  const std::unordered_map<std::string, std::string> & parameters, const std::string & key,
-  bool fallback)
-{
-  const auto value = parameters.find(key);
-  if (value == parameters.end()) {return fallback;}
-  if (value->second == "true" || value->second == "1") {return true;}
-  if (value->second == "false" || value->second == "0") {return false;}
-  throw std::invalid_argument(key + " must be true or false");
-}
 }  // namespace
 
 hardware_interface::CallbackReturn QuattroSystem::on_init(
   const hardware_interface::HardwareComponentInterfaceParams & params)
 {
-  if (hardware_interface::SystemInterface::on_init(params) !=
-    hardware_interface::CallbackReturn::SUCCESS)
-  {
-    return hardware_interface::CallbackReturn::ERROR;
+  const auto base_result = hardware_interface::SystemInterface::on_init(params);
+  if (base_result != hardware_interface::CallbackReturn::SUCCESS) {
+    return base_result;
   }
-  try {
-    const auto & hp = params.hardware_info.hardware_parameters;
-    const auto default_bus = parameterString(hp, "can_interface", "can0");
-    const auto control_method = parameterString(hp, "control_method", "mit");
-    if (control_method == "direct_position") {
-      control_method_ = ControlMethod::kDirectPosition;
-    } else if (control_method == "direct_velocity") {
-      control_method_ = ControlMethod::kDirectVelocity;
-    } else if (control_method == "direct_torque") {
-      control_method_ = ControlMethod::kDirectTorque;
-    } else if (control_method == "mit") {
-      control_method_ = ControlMethod::kMit;
-    } else {
-      throw std::invalid_argument(
-              "control_method must be direct_position, direct_velocity, direct_torque, or mit");
-    }
-    feedback_timeout_ = std::chrono::milliseconds(parameterLong(hp, "feedback_timeout_ms", 150));
-    feedback_request_period_ = std::chrono::milliseconds(
-      parameterLong(hp, "feedback_request_period_ms", 50));
-    heartbeat_timeout_ = std::chrono::milliseconds(parameterLong(hp, "heartbeat_timeout_ms", 400));
-    startup_timeout_ = std::chrono::milliseconds(parameterLong(hp, "startup_timeout_ms", 1000));
-    motor_activation_interval_ = std::chrono::milliseconds(
-      parameterLong(hp, "motor_activation_interval_ms", 500));
-    command_timeout_ = std::chrono::milliseconds(parameterLong(hp, "command_timeout_ms", 250));
-    scheduling_warning_ =
-      std::chrono::milliseconds(parameterLong(hp, "scheduling_warning_ms", 50));
-    motor_velocity_limit_ = parameterDouble(hp, "rotor_velocity_limit_rev_s", 5.0);
-    motor_current_limit_ = parameterDouble(hp, "motor_current_limit_a", 5.0);
-    apply_position_gains_ = parameterBool(hp, "apply_position_gains", false);
-    position_gains_.position_gain = parameterDouble(hp, "position_gain", 0.0);
-    position_gains_.velocity_gain = parameterDouble(hp, "velocity_gain", 0.0);
-    position_gains_.velocity_integrator_gain =
-      parameterDouble(hp, "velocity_integrator_gain", 0.0);
-    engagement_duration_ = std::chrono::milliseconds(
-      parameterLong(hp, "engagement_duration_ms", 1000));
-    telemetry_period_ = std::chrono::milliseconds(parameterLong(hp, "telemetry_period_ms", 500));
-    if (feedback_timeout_.count() <= 0 || feedback_request_period_.count() <= 0 ||
-      feedback_request_period_ >= feedback_timeout_ || heartbeat_timeout_.count() <= 0 ||
-      startup_timeout_.count() <= 0 || telemetry_period_.count() <= 0 ||
-      motor_activation_interval_.count() < 0 ||
-      command_timeout_.count() <= 0 || scheduling_warning_.count() <= 0 ||
-      scheduling_warning_ >= command_timeout_ || motor_velocity_limit_ <= 0.0 ||
-      motor_current_limit_ <= 0.0 || engagement_duration_.count() <= 0)
-    {
-      throw std::invalid_argument(
-              "hardware timeouts and motor limits must be positive, and feedback request "
-              "period must be shorter than feedback timeout");
-    }
-    if (apply_position_gains_ && control_method_ != ControlMethod::kDirectPosition) {
-      throw std::invalid_argument("position gains can only be applied in direct_position mode");
-    }
-    if (apply_position_gains_) {
-      (void)gim6010_driver::encodePositionGain(
-        static_cast<float>(position_gains_.position_gain));
-      (void)gim6010_driver::encodeVelocityGains(
-        static_cast<float>(position_gains_.velocity_gain),
-        static_cast<float>(position_gains_.velocity_integrator_gain));
-    }
 
-    std::unordered_set<std::string> motor_addresses;
-    for (const auto & info : params.hardware_info.joints) {
-      std::unordered_set<std::string> command_names;
-      for (const auto & command : info.command_interfaces) {
-        command_names.insert(command.name);
-      }
-      const std::unordered_set<std::string> expected_commands =
-        control_method_ == ControlMethod::kMit ?
-        std::unordered_set<std::string>{"position", "velocity", "kp", "kd", "effort"} :
-      std::unordered_set<std::string>{commandInterfaceName()};
-      if (command_names != expected_commands) {
-        throw std::invalid_argument(
-                info.name + " command interfaces do not match the selected control method");
-      }
-      if (info.state_interfaces.size() != 3) {
-        throw std::invalid_argument(info.name + " must expose position, velocity, effort states");
-      }
-      std::unordered_set<std::string> state_names;
-      for (const auto & state : info.state_interfaces) {
-        state_names.insert(state.name);
-      }
-      if (state_names != std::unordered_set<std::string>{
-          hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
-          hardware_interface::HW_IF_EFFORT})
-      {
-        throw std::invalid_argument(info.name + " has invalid state interface names");
-      }
-      Joint joint;
-      joint.name = info.name;
-      joint.can_interface = parameterString(info.parameters, "can_interface", default_bus);
-      const auto node_id = parameterLong(info.parameters, "can_id", -1);
-      if (node_id < 0 || node_id > gim6010_driver::Gim6010Motor::kMaxNodeId) {
-        throw std::invalid_argument(info.name + " has invalid can_id");
-      }
-      joint.node_id = static_cast<std::uint8_t>(node_id);
-      joint.direction = parameterDouble(info.parameters, "direction", 1.0);
-      joint.offset = parameterDouble(info.parameters, "offset", 0.0);
-      joint.gear_ratio = parameterDouble(info.parameters, "gear_ratio", 8.0);
-      joint.current_limit = parameterDouble(
-        info.parameters, "current_limit", motor_current_limit_);
-      joint.mit_kp = parameterDouble(info.parameters, "mit_kp", 20.0);
-      joint.mit_kd = parameterDouble(info.parameters, "mit_kd", 0.5);
-      if (joint.direction != 1.0 && joint.direction != -1.0) {
-        throw std::invalid_argument(info.name + " direction must be 1 or -1");
-      }
-      if (!std::isfinite(joint.gear_ratio) || joint.gear_ratio <= 0.0) {
-        throw std::invalid_argument(info.name + " gear_ratio must be positive");
-      }
-      if (!std::isfinite(joint.current_limit) || joint.current_limit <= 0.0 ||
-        joint.current_limit > 100.0)
-      {
-        throw std::invalid_argument(info.name + " current_limit must be in (0, 100] A");
-      }
-      const auto command_entry = std::find_if(
-        info.command_interfaces.begin(), info.command_interfaces.end(),
-        [this](const auto & entry) {
-          return entry.name ==
-                 (control_method_ == ControlMethod::kMit ? "position" : commandInterfaceName());
-        });
-      const auto & command = *command_entry;
-      if (!command.min.empty()) {joint.lower = std::stod(command.min);}
-      if (!command.max.empty()) {joint.upper = std::stod(command.max);}
-      if (!(joint.lower < joint.upper)) {
-        throw std::invalid_argument(info.name + " has invalid limits");
-      }
-      const std::string address = joint.can_interface + ":" + std::to_string(node_id);
-      if (!motor_addresses.insert(address).second) {
-        throw std::invalid_argument("duplicate motor " + address);
-      }
-      if (control_method_ == ControlMethod::kMit) {
-        gim6010_driver::validateCommand({0.0, 0.0, joint.mit_kp, joint.mit_kd, 0.0});
-      }
-      joints_.push_back(joint);
-    }
-    if (joints_.empty()) {throw std::invalid_argument("no joints configured");}
-    diagnostics_publisher_ = get_node()->create_publisher<
-      diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
-  } catch (const std::exception & error) {
-    RCLCPP_ERROR(get_logger(), "Invalid Quattro hardware configuration: %s", error.what());
+  if (!parse_hardware_parameters()) {
     return hardware_interface::CallbackReturn::ERROR;
   }
+  if (!parse_joints()) {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+  if (!validate_interfaces()) {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  RCLCPP_INFO(
+    get_logger(), "QuattroSystem initialized: %zu joints, control_method_index=%d",
+    joints_.size(), static_cast<int>(control_method_));
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-bool QuattroSystem::configureMotors()
+bool QuattroSystem::parse_hardware_parameters()
 {
-  for (auto & joint : joints_) {
-    auto & manager = managers_[joint.can_interface];
-    if (!manager) {manager = std::make_unique<gim6010_driver::MotorManager>(joint.can_interface);}
-    manager->addMotor(joint.node_id, joint.gear_ratio);
-    joint.manager = manager.get();
-  }
-  return true;
-}
+  const auto & params = info_.hardware_parameters;
+  const auto & logger = get_logger();
 
-void QuattroSystem::configureMotorControllers()
-{
-  for (auto & joint : joints_) {
-    auto & motor = joint.manager->motor(joint.node_id);
-    motor.setLimits(static_cast<float>(motor_velocity_limit_),
-        static_cast<float>(joint.current_limit));
-    RCLCPP_INFO(
-      get_logger(), "Configured current limit: joint=%s can_id=%u limit=%.3fA",
-      joint.name.c_str(), static_cast<unsigned>(joint.node_id), joint.current_limit);
-    std::this_thread::sleep_for(kConfigureFrameInterval);
-    switch (control_method_) {
-      case ControlMethod::kDirectPosition:
-        motor.configurePositionControl(gim6010_driver::PositionInputMode::kDirect);
-        if (apply_position_gains_) {motor.setPositionControlGains(position_gains_);}
-        break;
-      case ControlMethod::kDirectVelocity: motor.configureVelocityControl(); break;
-      case ControlMethod::kDirectTorque: motor.configureTorqueControl(); break;
-      case ControlMethod::kMit: motor.configureMitControl(); break;
-    }
-    std::this_thread::sleep_for(kConfigureFrameInterval);
+  std::string control_method_text;
+  if (!get_required(params, "control_method", control_method_text, logger)) {
+    return false;
   }
-}
-
-// This is Quattro's absolute-position-at-startup step. GIM6010-8 has one
-// onboard encoder (a 14-bit single-turn absolute magnetic encoder) and no
-// second, independently-readable position sensor -- see
-// docs/gim6010_hardware.md section 11. "Confirming absolute position at
-// boot" therefore means: wait for a fresh Get_Encoder_Estimates (0x009, or
-// the MIT feedback frame 0x008 once MIT is configured) from that one
-// encoder, which is already absolute within one rotor revolution the
-// instant it arrives. It does NOT resolve which output-shaft rotation the
-// joint is in when the joint's range of motion exceeds one rotor-turn's
-// output-equivalent span (360deg / gear_ratio); that multi-turn ambiguity
-// is a real, currently-unverified gap (does firmware persist the turn count
-// across a power cycle?) and is not solved by any code here -- see the
-// "실기 검증 필요" note in docs/gim6010_hardware.md section 11.
-bool QuattroSystem::waitForInitialFeedback()
-{
-  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
-  while (std::chrono::steady_clock::now() < deadline) {
-    pollManagers();
-    const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
-          const auto & motor = joint.manager->motor(joint.node_id);
-          return motor.hasFeedback() && !motor.feedbackStale(feedback_timeout_);
-    });
-    if (ready) {return true;}
-    for (auto & joint : joints_) {
-      auto & motor = joint.manager->motor(joint.node_id);
-      if (!motor.hasFeedback() || motor.feedbackStale(feedback_timeout_)) {
-        motor.requestEncoderEstimates();
-      }
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
-  }
-  for (const auto & joint : joints_) {
-    const auto & motor = joint.manager->motor(joint.node_id);
-    if (!motor.hasFeedback() || motor.feedbackStale(feedback_timeout_)) {
-      RCLCPP_ERROR(
-        get_logger(),
-          "Missing fresh 0x08/0x09 feedback: joint=%s interface=%s can_id=%u received=%s",
-        joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
-        motor.hasFeedback() ? "yes (stale)" : "no");
-    }
-  }
-  return false;
-}
-
-void QuattroSystem::pollManagers()
-{
-  for (auto & manager : managers_) {
-    while (manager.second->poll(std::chrono::milliseconds{0})) {
-    }
-  }
-}
-
-bool QuattroSystem::waitForOperationalHeartbeats()
-{
-  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
-  while (std::chrono::steady_clock::now() < deadline) {
-    pollManagers();
-    const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
-          const auto & motor = joint.manager->motor(joint.node_id);
-          return motor.hasHeartbeat() && !motor.heartbeatStale(heartbeat_timeout_) &&
-                 motor.heartbeat().axis_error == 0U &&
-                 (motor.heartbeat().flags & kHeartbeatFaultMask) == 0U &&
-                 motor.heartbeat().axis_state == kClosedLoopControl;
-    });
-    if (ready) {return true;}
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
-  }
-  for (const auto & joint : joints_) {
-    const auto & motor = joint.manager->motor(joint.node_id);
-    if (!motor.hasHeartbeat()) {
-      RCLCPP_ERROR(get_logger(), "Missing heartbeat from %s", joint.name.c_str());
-      continue;
-    }
-    const auto & heartbeat = motor.heartbeat();
-    RCLCPP_ERROR(
-      get_logger(),
-      "Motor not operational: joint=%s interface=%s can_id=%u axis_error=%s "
-      "axis_state=%u flags=%s life=%u",
-      joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
-      hexValue(heartbeat.axis_error).c_str(), static_cast<unsigned>(heartbeat.axis_state),
-      hexValue(heartbeat.flags).c_str(), static_cast<unsigned>(heartbeat.life));
-  }
-  return false;
-}
-
-void QuattroSystem::sendActivationHold(Joint & joint, double output_position)
-{
-  auto & motor = joint.manager->motor(joint.node_id);
-  if (control_method_ == ControlMethod::kDirectPosition) {
-    motor.setPosition(static_cast<float>(output_position * joint.gear_ratio / kTwoPi));
-  } else if (control_method_ == ControlMethod::kDirectVelocity) {
-    motor.setVelocity(0.0F);
-  } else if (control_method_ == ControlMethod::kDirectTorque) {
-    motor.setTorque(0.0F);
+  if (control_method_text == "direct_position") {
+    control_method_ = ControlMethod::kDirectPosition;
+  } else if (control_method_text == "direct_velocity") {
+    control_method_ = ControlMethod::kDirectVelocity;
+  } else if (control_method_text == "direct_torque") {
+    control_method_ = ControlMethod::kDirectTorque;
+  } else if (control_method_text == "mit") {
+    control_method_ = ControlMethod::kMit;
   } else {
-    motor.sendMitCommand({output_position, 0.0, 0.0, 0.0, 0.0});
+    RCLCPP_ERROR(
+      logger, "Unknown control_method '%s' (expected direct_position/direct_velocity/"
+      "direct_torque/mit)", control_method_text.c_str());
+    return false;
   }
+
+  bool ok = true;
+  ok = parse_bool_param(params, "apply_position_gains", apply_position_gains_, logger) && ok;
+  ok = parse_double_param(params, "position_gain", position_gain_, logger) && ok;
+  ok = parse_double_param(params, "velocity_gain", velocity_gain_, logger) && ok;
+  ok = parse_double_param(params, "velocity_integrator_gain", velocity_integrator_gain_, logger) &&
+    ok;
+  ok = parse_ms_param(params, "feedback_timeout_ms", feedback_timeout_, logger) && ok;
+  ok = parse_ms_param(params, "feedback_request_period_ms", feedback_request_period_, logger) && ok;
+  ok = parse_ms_param(params, "heartbeat_timeout_ms", heartbeat_timeout_, logger) && ok;
+  ok = parse_ms_param(params, "startup_timeout_ms", startup_timeout_, logger) && ok;
+  ok = parse_ms_param(params, "motor_activation_interval_ms", motor_activation_interval_, logger) &&
+    ok;
+  ok = parse_ms_param(params, "command_timeout_ms", command_timeout_, logger) && ok;
+  ok = parse_ms_param(params, "scheduling_warning_ms", scheduling_warning_, logger) && ok;
+  ok = parse_double_param(params, "rotor_velocity_limit_rev_s", rotor_velocity_limit_rev_s_, logger) &&
+    ok;
+  ok = parse_double_param(params, "motor_current_limit_a", motor_current_limit_a_, logger) && ok;
+  ok = parse_ms_param(params, "engagement_duration_ms", engagement_duration_, logger) && ok;
+  ok = parse_ms_param(params, "telemetry_period_ms", telemetry_period_, logger) && ok;
+
+  if (!ok) {
+    RCLCPP_ERROR(logger, "One or more hardware_parameters failed to parse (see errors above)");
+  }
+  return ok;
 }
 
-bool QuattroSystem::waitForMotorOperational(
-  std::size_t motor_index, const std::vector<double> & hold_positions)
+bool QuattroSystem::parse_joints()
 {
-  auto & target_joint = joints_.at(motor_index);
-  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
-  auto next_feedback_request = std::chrono::steady_clock::now();
-  while (std::chrono::steady_clock::now() < deadline) {
-    for (std::size_t index = 0; index <= motor_index; ++index) {
-      sendActivationHold(joints_[index], hold_positions[index]);
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (control_method_ != ControlMethod::kMit && now >= next_feedback_request) {
-      requestMotorFeedback(motor_index + 1U);
-      next_feedback_request = now + feedback_request_period_;
-    }
-    pollManagers();
-    auto & motor = target_joint.manager->motor(target_joint.node_id);
-    if (motor.hasHeartbeat() && !motor.heartbeatStale(heartbeat_timeout_)) {
-      const auto & heartbeat = motor.heartbeat();
-      if (heartbeat.axis_error != 0U || (heartbeat.flags & kHeartbeatFaultMask) != 0U) {
-        RCLCPP_ERROR(
-          get_logger(),
-          "Motor fault during sequential activation: joint=%s axis_error=%s flags=%s",
-          target_joint.name.c_str(), hexValue(heartbeat.axis_error).c_str(),
-          hexValue(heartbeat.flags).c_str());
-        return false;
-      }
-      if (heartbeat.axis_state == kClosedLoopControl && motor.hasFeedback() &&
-        !motor.feedbackStale(feedback_timeout_))
-      {
-        return true;
-      }
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
-  }
-  RCLCPP_ERROR(
-    get_logger(), "Sequential activation timed out: joint=%s interface=%s can_id=%u",
-    target_joint.name.c_str(), target_joint.can_interface.c_str(),
-    static_cast<unsigned>(target_joint.node_id));
-  return false;
-}
+  const auto & logger = get_logger();
+  joints_.clear();
+  joints_.reserve(info_.joints.size());
 
-bool QuattroSystem::waitForActivationInterval(
-  std::size_t motor_index, const std::vector<double> & hold_positions)
-{
-  const auto deadline = std::chrono::steady_clock::now() + motor_activation_interval_;
-  auto next_feedback_request = std::chrono::steady_clock::now();
-  while (std::chrono::steady_clock::now() < deadline) {
-    for (std::size_t index = 0; index <= motor_index; ++index) {
-      sendActivationHold(joints_[index], hold_positions[index]);
+  std::set<uint8_t> seen_node_ids;
+  for (const auto & joint_info : info_.joints) {
+    JointContext joint;
+    joint.name = joint_info.name;
+    const auto & params = joint_info.parameters;
+
+    if (!get_required(params, "can_interface", joint.can_bus, logger)) {
+      return false;
     }
-    const auto now = std::chrono::steady_clock::now();
-    if (control_method_ != ControlMethod::kMit && now >= next_feedback_request) {
-      requestMotorFeedback(motor_index + 1U);
-      next_feedback_request = now + feedback_request_period_;
+
+    std::string can_id_text;
+    if (!get_required(params, "can_id", can_id_text, logger)) {
+      return false;
     }
-    pollManagers();
-    for (std::size_t index = 0; index <= motor_index; ++index) {
-      const auto & joint = joints_[index];
-      const auto & motor = joint.manager->motor(joint.node_id);
-      if (!motor.hasHeartbeat() || motor.heartbeatStale(heartbeat_timeout_) ||
-        motor.heartbeat().axis_error != 0U ||
-        (motor.heartbeat().flags & kHeartbeatFaultMask) != 0U ||
-        motor.heartbeat().axis_state != kClosedLoopControl ||
-        !motor.hasFeedback() || motor.feedbackStale(feedback_timeout_))
+    int can_id_value = -1;
+    try {
+      size_t consumed = 0;
+      can_id_value = std::stoi(can_id_text, &consumed);
+      if (consumed != can_id_text.size()) {
+        throw std::invalid_argument("trailing characters");
+      }
+    } catch (const std::exception &) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' has invalid can_id '%s'", joint.name.c_str(), can_id_text.c_str());
+      return false;
+    }
+    if (can_id_value < 0 || can_id_value > static_cast<int>(gim6010_driver::kMaxNodeId)) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' can_id %d is outside [0, %u]", joint.name.c_str(), can_id_value,
+        gim6010_driver::kMaxNodeId);
+      return false;
+    }
+    joint.node_id = static_cast<uint8_t>(can_id_value);
+    if (!seen_node_ids.insert(joint.node_id).second) {
+      RCLCPP_ERROR(logger, "Duplicate can_id %u across joints", joint.node_id);
+      return false;
+    }
+
+    double direction = 0.0;
+    if (!parse_double_param(params, "direction", direction, logger)) {
+      return false;
+    }
+    if (direction != 1.0 && direction != -1.0) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' direction must be exactly 1.0 or -1.0, got %f", joint.name.c_str(),
+        direction);
+      return false;
+    }
+    joint.calibration.direction = direction;
+
+    if (!parse_double_param(params, "offset", joint.calibration.offset, logger)) {
+      return false;
+    }
+
+    if (!parse_double_param(params, "gear_ratio", joint.calibration.gear_ratio, logger)) {
+      return false;
+    }
+    if (!(joint.calibration.gear_ratio > 0.0)) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' gear_ratio must be positive, got %f", joint.name.c_str(),
+        joint.calibration.gear_ratio);
+      return false;
+    }
+
+    if (!parse_double_param(params, "current_limit", joint.current_limit, logger)) {
+      return false;
+    }
+    if (!(joint.current_limit > 0.0)) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' current_limit must be positive, got %f", joint.name.c_str(),
+        joint.current_limit);
+      return false;
+    }
+
+    if (control_method_ == ControlMethod::kMit) {
+      if (!parse_double_param(params, "mit_kp", joint.mit_kp, logger) ||
+        !parse_double_param(params, "mit_kd", joint.mit_kd, logger))
+      {
+        return false;
+      }
+      if (joint.mit_kp < 0.0 || joint.mit_kp > gim6010_driver::kMitKpMax ||
+        joint.mit_kd < 0.0 || joint.mit_kd > gim6010_driver::kMitKdMax)
       {
         RCLCPP_ERROR(
-          get_logger(), "Previously enabled motor became unhealthy: joint=%s",
-          joint.name.c_str());
+          logger, "Joint '%s' mit_kp/mit_kd (%f/%f) is outside the GIM6010 MIT range "
+          "([0,%f]/[0,%f])", joint.name.c_str(), joint.mit_kp, joint.mit_kd,
+          gim6010_driver::kMitKpMax, gim6010_driver::kMitKdMax);
         return false;
       }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+
+    joints_.push_back(std::move(joint));
+  }
+
+  if (joints_.empty()) {
+    RCLCPP_ERROR(logger, "QuattroSystem requires at least one joint");
+    return false;
   }
   return true;
 }
 
-bool QuattroSystem::waitForPreflightHeartbeats()
+bool QuattroSystem::validate_interfaces() const
 {
-  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
-  while (std::chrono::steady_clock::now() < deadline) {
-    pollManagers();
-    const bool ready = std::all_of(joints_.begin(), joints_.end(), [this](const Joint & joint) {
-          const auto & motor = joint.manager->motor(joint.node_id);
-          return motor.hasHeartbeat() && !motor.heartbeatStale(heartbeat_timeout_);
-    });
-    if (ready) {break;}
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  const auto & logger = get_logger();
+
+  std::vector<std::string> expected_command;
+  switch (control_method_) {
+    case ControlMethod::kDirectPosition:
+      expected_command = {hardware_interface::HW_IF_POSITION};
+      break;
+    case ControlMethod::kDirectVelocity:
+      expected_command = {hardware_interface::HW_IF_VELOCITY};
+      break;
+    case ControlMethod::kDirectTorque:
+      expected_command = {hardware_interface::HW_IF_EFFORT};
+      break;
+    case ControlMethod::kMit:
+      expected_command = {
+        hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY, "kp", "kd",
+        hardware_interface::HW_IF_EFFORT};
+      break;
   }
-  for (const auto & joint : joints_) {
-    const auto & motor = joint.manager->motor(joint.node_id);
-    if (!motor.hasHeartbeat() || motor.heartbeatStale(heartbeat_timeout_)) {
-      RCLCPP_ERROR(get_logger(), "Missing fresh preflight heartbeat from %s", joint.name.c_str());
+  const std::vector<std::string> expected_state = {
+    hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
+    hardware_interface::HW_IF_EFFORT};
+
+  for (const auto & joint_info : info_.joints) {
+    if (joint_info.command_interfaces.size() != expected_command.size()) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' has %zu command interfaces, expected exactly %zu for this "
+        "control_method", joint_info.name.c_str(), joint_info.command_interfaces.size(),
+        expected_command.size());
       return false;
     }
-    const auto & heartbeat = motor.heartbeat();
-    if (heartbeat.axis_error != 0U || (heartbeat.flags & kHeartbeatFaultMask) != 0U) {
+    for (const auto & wanted : expected_command) {
+      const bool found = std::any_of(
+        joint_info.command_interfaces.begin(), joint_info.command_interfaces.end(),
+        [&wanted](const auto & interface_info) { return interface_info.name == wanted; });
+      if (!found) {
+        RCLCPP_ERROR(
+          logger, "Joint '%s' is missing required command interface '%s'",
+          joint_info.name.c_str(), wanted.c_str());
+        return false;
+      }
+    }
+
+    if (joint_info.state_interfaces.size() != expected_state.size()) {
       RCLCPP_ERROR(
-        get_logger(),
-        "Pre-existing motor fault preserved: joint=%s axis_error=%s flags=%s",
-        joint.name.c_str(), hexValue(heartbeat.axis_error).c_str(),
-        hexValue(heartbeat.flags).c_str());
+        logger, "Joint '%s' has %zu state interfaces, expected exactly %zu (position/velocity/"
+        "effort)", joint_info.name.c_str(), joint_info.state_interfaces.size(),
+        expected_state.size());
       return false;
     }
-    if (heartbeat.axis_state != static_cast<std::uint8_t>(gim6010_driver::AxisState::kIdle)) {
-      RCLCPP_ERROR(
-        get_logger(), "Unsafe preflight state: joint=%s axis_state=%u (expected idle)",
-        joint.name.c_str(), static_cast<unsigned>(heartbeat.axis_state));
-      return false;
+    for (const auto & wanted : expected_state) {
+      const bool found = std::any_of(
+        joint_info.state_interfaces.begin(), joint_info.state_interfaces.end(),
+        [&wanted](const auto & interface_info) { return interface_info.name == wanted; });
+      if (!found) {
+        RCLCPP_ERROR(
+          logger, "Joint '%s' is missing required state interface '%s'", joint_info.name.c_str(),
+          wanted.c_str());
+        return false;
+      }
     }
   }
   return true;
@@ -484,488 +340,394 @@ bool QuattroSystem::waitForPreflightHeartbeats()
 
 hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_lifecycle::State &)
 {
+  const auto & logger = get_logger();
+
+  buses_.clear();
+  std::vector<gim6010_driver::MotorRoute> routes;
+  std::set<std::string> seen_buses;
+  for (const auto & joint : joints_) {
+    if (seen_buses.insert(joint.can_bus).second) {
+      buses_.push_back(joint.can_bus);
+    }
+    routes.push_back(gim6010_driver::MotorRoute{joint.node_id, joint.can_bus});
+  }
+
   try {
-    managers_.clear();
-    configureMotors();
-    if (!waitForInitialFeedback()) {
-      RCLCPP_ERROR(get_logger(), "Safe Start failed: not all motors supplied feedback");
-      captureFaultDiagnostics();
-      safeStop();
-      return hardware_interface::CallbackReturn::ERROR;
+    motor_manager_ = std::make_unique<gim6010_driver::MotorManager>(buses_, routes);
+  } catch (const std::exception & error) {
+    RCLCPP_ERROR(logger, "Failed to construct MotorManager: %s", error.what());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  if (!motor_manager_->open()) {
+    RCLCPP_ERROR(logger, "Failed to open one or more CAN buses");
+    motor_manager_.reset();
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  bool ok = true;
+  for (const auto & joint : joints_) {
+    if (!motor_manager_->send_set_limits(
+        joint.node_id, static_cast<float>(rotor_velocity_limit_rev_s_),
+        static_cast<float>(joint.current_limit)))
+    {
+      RCLCPP_ERROR(logger, "Failed to send Set_Limits to joint '%s'", joint.name.c_str());
+      ok = false;
     }
-    if (!waitForPreflightHeartbeats()) {
-      RCLCPP_ERROR(get_logger(), "Safe Start failed: heartbeat/fault preflight rejected");
-      captureFaultDiagnostics();
-      safeStop();
-      return hardware_interface::CallbackReturn::ERROR;
-    }
-    configureMotorControllers();
-    for (const auto & joint : joints_) {
-      const auto & feedback = joint.manager->motor(joint.node_id).feedback();
-      const JointTransform transform(joint.direction, joint.offset);
-      const double joint_position = transform.toJointPosition(feedback.output_position_rad);
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY),
-        transform.toJointVelocity(feedback.output_velocity_rad_s));
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
-        transform.toJointEffort(feedback.output_torque_nm));
-      const double initial_command =
-        (control_method_ == ControlMethod::kDirectPosition ||
-        control_method_ == ControlMethod::kMit) ?
-        joint_position : 0.0;
-      set_command(interfaceKey(joint, commandInterfaceName()), initial_command);
-      if (control_method_ == ControlMethod::kMit) {
-        set_command(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY), 0.0);
-        set_command(interfaceKey(joint, "kp"), joint.mit_kp);
-        set_command(interfaceKey(joint, "kd"), joint.mit_kd);
-        set_command(interfaceKey(joint, hardware_interface::HW_IF_EFFORT), 0.0);
+    if (apply_position_gains_) {
+      const bool gains_ok =
+        motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_)) &&
+        motor_manager_->send_set_vel_gains(
+        joint.node_id, static_cast<float>(velocity_gain_),
+        static_cast<float>(velocity_integrator_gain_));
+      if (!gains_ok) {
+        RCLCPP_ERROR(
+          logger, "Failed to apply position/velocity gains to joint '%s'", joint.name.c_str());
+        ok = false;
       }
     }
-  } catch (const std::exception & error) {
-    RCLCPP_ERROR(get_logger(), "Failed to configure motors: %s", error.what());
-    captureFaultDiagnostics();
-    safeStop();
+  }
+
+  // Deliberately no Clear_Errors here: a pre-existing fault must remain
+  // visible until on_activate's fault check and an operator decide what to
+  // do about it (docs/packages/quattro_hardware.md section 4).
+
+  if (!ok) {
+    motor_manager_->close();
+    motor_manager_.reset();
     return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  RCLCPP_INFO(
+    logger, "QuattroSystem configured: %zu joints across %zu CAN bus(es)", joints_.size(),
+    buses_.size());
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn QuattroSystem::on_cleanup(const rclcpp_lifecycle::State &)
+{
+  if (motor_manager_) {
+    motor_manager_->close();
+    motor_manager_.reset();
   }
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
+bool QuattroSystem::wait_for_fresh_feedback_and_no_faults()
+{
+  const auto & logger = get_logger();
+  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
+
+  std::set<uint8_t> pending;
+  for (const auto & joint : joints_) {
+    pending.insert(joint.node_id);
+  }
+
+  while (!pending.empty() && std::chrono::steady_clock::now() < deadline) {
+    for (const auto & joint : joints_) {
+      if (pending.count(joint.node_id) != 0) {
+        motor_manager_->request_encoder_estimate(joint.node_id);
+      }
+    }
+    std::this_thread::sleep_for(kPollInterval);
+    motor_manager_->poll();
+
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = pending.begin(); it != pending.end();) {
+      const auto * motor = motor_manager_->motor(*it);
+      if (motor != nullptr && motor->has_fresh_feedback(feedback_timeout_, now)) {
+        it = pending.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  if (!pending.empty()) {
+    RCLCPP_ERROR(
+      logger, "%zu motor(s) never answered with fresh feedback within startup_timeout_ms (%ld ms)",
+      pending.size(), startup_timeout_.count());
+    return false;
+  }
+
+  // Fresh feedback confirmed for everyone; now request and check for
+  // pre-existing faults before touching axis state on any motor.
+  for (const auto & joint : joints_) {
+    motor_manager_->request_get_error(joint.node_id);
+  }
+  std::this_thread::sleep_for(kPollInterval);
+  motor_manager_->poll();
+
+  bool fault_free = true;
+  for (const auto & joint : joints_) {
+    const auto * motor = motor_manager_->motor(joint.node_id);
+    const auto error = motor != nullptr ? motor->last_error() : std::nullopt;
+    if (!error || error->active_errors != 0 || error->disarm_reason != 0) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' (node %u) has a pre-existing fault or did not respond to Get_Error "
+        "(active_errors=0x%08X, disarm_reason=0x%08X) -- refusing to activate. Clear the fault "
+        "explicitly before retrying.",
+        joint.name.c_str(), joint.node_id, error ? error->active_errors : 0U,
+        error ? error->disarm_reason : 0U);
+      fault_free = false;
+    }
+  }
+  return fault_free;
+}
+
+bool QuattroSystem::activate_joint(const JointContext & joint)
+{
+  const auto & logger = get_logger();
+  auto * motor = motor_manager_->motor(joint.node_id);
+  const auto estimate = motor != nullptr ? motor->last_encoder_estimate() : std::nullopt;
+  if (!estimate) {
+    RCLCPP_ERROR(
+      logger, "Joint '%s' has no encoder estimate at activation time", joint.name.c_str());
+    return false;
+  }
+  const double current_joint_rad = motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
+
+  gim6010_driver::ControlMode control_mode{};
+  gim6010_driver::InputMode input_mode{};
+  switch (control_method_) {
+    case ControlMethod::kDirectPosition:
+      control_mode = gim6010_driver::ControlMode::kPositionControl;
+      input_mode = gim6010_driver::InputMode::kDirect;
+      break;
+    case ControlMethod::kDirectVelocity:
+      control_mode = gim6010_driver::ControlMode::kVelocityControl;
+      input_mode = gim6010_driver::InputMode::kDirect;
+      break;
+    case ControlMethod::kDirectTorque:
+      control_mode = gim6010_driver::ControlMode::kTorqueControl;
+      input_mode = gim6010_driver::InputMode::kDirect;
+      break;
+    case ControlMethod::kMit:
+      control_mode = gim6010_driver::ControlMode::kPositionControl;
+      input_mode = gim6010_driver::InputMode::kMitMotionControl;
+      break;
+  }
+
+  if (!motor_manager_->send_set_controller_mode(joint.node_id, control_mode, input_mode)) {
+    RCLCPP_ERROR(logger, "Failed to set controller mode for joint '%s'", joint.name.c_str());
+    return false;
+  }
+  if (!motor_manager_->send_set_axis_state(
+      joint.node_id, gim6010_driver::AxisState::kClosedLoopControl))
+  {
+    RCLCPP_ERROR(
+      logger, "Failed to request closed-loop control for joint '%s'", joint.name.c_str());
+    return false;
+  }
+
+  if (control_method_ == ControlMethod::kMit) {
+    // Ramp Kp/Kd from 0 up to the configured hold gains over
+    // engagement_duration_ so closed-loop engagement doesn't snap the joint
+    // into a stiff hold instantaneously.
+    const auto ramp_start = std::chrono::steady_clock::now();
+    while (true) {
+      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - ramp_start).count();
+      const double fraction = engagement_duration_.count() <= 0
+        ? 1.0
+        : std::clamp(
+          static_cast<double>(elapsed_ms) / static_cast<double>(engagement_duration_.count()), 0.0,
+          1.0);
+
+      gim6010_driver::MitCommand command;
+      command.position_rad = joint_rad_to_mit_output_rad(current_joint_rad, joint.calibration);
+      command.velocity_rad_s = 0.0;
+      command.kp = joint.mit_kp * fraction;
+      command.kd = joint.mit_kd * fraction;
+      command.torque_Nm = 0.0;
+      if (!motor_manager_->send_mit_command(joint.node_id, command)) {
+        RCLCPP_ERROR(logger, "Joint '%s' rejected MIT engagement command", joint.name.c_str());
+        return false;
+      }
+      motor_manager_->poll();
+
+      if (fraction >= 1.0) {
+        break;
+      }
+      std::this_thread::sleep_for(kPollInterval);
+    }
+  } else if (control_method_ == ControlMethod::kDirectPosition) {
+    gim6010_driver::SetInputPosCommand command;
+    command.position_rev = static_cast<float>(joint_rad_to_motor_rev(current_joint_rad, joint.calibration));
+    const auto frame = motor_manager_->send_set_input_pos(joint.node_id, command);
+    if (!frame) {
+      RCLCPP_ERROR(logger, "Joint '%s' rejected initial hold position", joint.name.c_str());
+      return false;
+    }
+  } else if (control_method_ == ControlMethod::kDirectVelocity) {
+    motor_manager_->send_set_input_vel(joint.node_id, 0.0F, 0.0F);
+  } else {
+    motor_manager_->send_set_input_torque(joint.node_id, 0.0F);
+  }
+
+  // Stability check: hold for motor_activation_interval_ and confirm no
+  // fault appears before moving on to the next motor.
+  const auto stable_until = std::chrono::steady_clock::now() + motor_activation_interval_;
+  while (std::chrono::steady_clock::now() < stable_until) {
+    motor_manager_->request_get_error(joint.node_id);
+    std::this_thread::sleep_for(kPollInterval);
+    motor_manager_->poll();
+
+    const auto error = motor->last_error();
+    if (error && (error->active_errors != 0 || error->disarm_reason != 0)) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' faulted during activation stabilization (active_errors=0x%08X, "
+        "disarm_reason=0x%08X)", joint.name.c_str(), error->active_errors, error->disarm_reason);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void QuattroSystem::safe_stop_all()
+{
+  if (!motor_manager_) {
+    return;
+  }
+  for (const auto & joint : joints_) {
+    motor_manager_->send_set_axis_state(joint.node_id, gim6010_driver::AxisState::kIdle);
+  }
+  active_ = false;
+}
+
 hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifecycle::State &)
 {
-  try {
-    std::vector<double> hold_positions;
-    hold_positions.reserve(joints_.size());
-    for (const auto & joint : joints_) {
-      hold_positions.push_back(joint.manager->motor(joint.node_id).feedback().output_position_rad);
-    }
-
-    for (std::size_t index = 0; index < joints_.size(); ++index) {
-      auto & joint = joints_[index];
-      auto & motor = joint.manager->motor(joint.node_id);
-      sendActivationHold(joint, hold_positions[index]);
-      std::this_thread::sleep_for(kConfigureFrameInterval);
-      motor.enable();
-      if (!waitForMotorOperational(index, hold_positions)) {
-        throw std::runtime_error("motor failed sequential activation: " + joint.name);
-      }
-      RCLCPP_INFO(
-        get_logger(), "Activated motor %zu/%zu: joint=%s interface=%s can_id=%u",
-        index + 1U, joints_.size(), joint.name.c_str(), joint.can_interface.c_str(),
-        static_cast<unsigned>(joint.node_id));
-      if (!waitForActivationInterval(index, hold_positions)) {
-        throw std::runtime_error("motor fault during activation interval: " + joint.name);
-      }
-    }
-
-    if (!waitForInitialFeedback()) {
-      throw std::runtime_error(
-              "not all enabled motors supplied fresh 0x08 or 0x09 feedback");
-    }
-    if (!waitForOperationalHeartbeats()) {
-      throw std::runtime_error("not all motors entered closed-loop control without errors");
-    }
-
-    constexpr auto control_period = std::chrono::milliseconds{10};
-
-    for (std::size_t refresh = 0;
-      control_method_ == ControlMethod::kMit && refresh < 3; ++refresh)
-    {
-      for (auto & joint : joints_) {
-        auto & motor = joint.manager->motor(joint.node_id);
-        motor.sendMitCommand({motor.feedback().output_position_rad, 0.0, 0.0, joint.mit_kd, 0.0});
-      }
-      std::this_thread::sleep_for(control_period);
-      pollManagers();
-    }
-
-    for (std::size_t index = 0; index < joints_.size(); ++index) {
-      const auto & joint = joints_[index];
-      const auto & motor = joint.manager->motor(joint.node_id);
-      if (motor.feedbackStale(feedback_timeout_)) {
-        throw std::runtime_error(
-                joint.name + " did not supply fresh feedback after zero-Kp activation");
-      }
-      hold_positions[index] = motor.feedback().output_position_rad;
-    }
-
-    const auto engagement_steps = control_method_ == ControlMethod::kMit ?
-      std::max<std::int64_t>(1, engagement_duration_.count() / control_period.count()) : 0;
-    auto next_cycle = std::chrono::steady_clock::now();
-    for (std::int64_t step = 1; step <= engagement_steps; ++step) {
-      const double gain_ratio =
-        static_cast<double>(step) / static_cast<double>(engagement_steps);
-      for (std::size_t index = 0; index < joints_.size(); ++index) {
-        const auto & joint = joints_[index];
-        joint.manager->motor(joint.node_id).sendMitCommand(
-          {hold_positions[index], 0.0, joint.mit_kp * gain_ratio, joint.mit_kd, 0.0});
-      }
-      next_cycle += control_period;
-      std::this_thread::sleep_until(next_cycle);
-      pollManagers();
-      for (const auto & joint : joints_) {
-        const auto & heartbeat = joint.manager->motor(joint.node_id).heartbeat();
-        if (heartbeat.axis_error != 0U ||
-          (heartbeat.flags & kHeartbeatFaultMask) != 0U ||
-          heartbeat.axis_state != kClosedLoopControl)
-        {
-          throw std::runtime_error(
-                  joint.name + " left closed-loop control during gain engagement");
-        }
-      }
-    }
-
-    if (control_method_ == ControlMethod::kMit) {
-      // Leave one complete control period between the final engagement burst and
-      // the controller manager's first write cycle so a small SocketCAN TX queue
-      // cannot retain frames from both cycles.
-      std::this_thread::sleep_for(control_period);
-      pollManagers();
-    }
-
-    for (const auto & joint : joints_) {
-      const auto & feedback = joint.manager->motor(joint.node_id).feedback();
-      const JointTransform transform(joint.direction, joint.offset);
-      const double joint_position = transform.toJointPosition(feedback.output_position_rad);
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION), joint_position);
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY),
-        transform.toJointVelocity(feedback.output_velocity_rad_s));
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
-        transform.toJointEffort(feedback.output_torque_nm));
-      const double initial_command =
-        (control_method_ == ControlMethod::kDirectPosition ||
-        control_method_ == ControlMethod::kMit) ?
-        joint_position : 0.0;
-      set_command(interfaceKey(joint, commandInterfaceName()), initial_command);
-      if (control_method_ == ControlMethod::kMit) {
-        set_command(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY), 0.0);
-        set_command(interfaceKey(joint, "kp"), joint.mit_kp);
-        set_command(interfaceKey(joint, "kd"), joint.mit_kd);
-        set_command(interfaceKey(joint, hardware_interface::HW_IF_EFFORT), 0.0);
-      }
-    }
-    last_write_ = std::chrono::steady_clock::now();
-    next_telemetry_request_ = last_write_;
-    next_telemetry_motor_ = 0;
-    next_feedback_request_ = last_write_;
-    next_diagnostics_publish_ = last_write_;
-    active_ = true;
-    RCLCPP_INFO(
-      get_logger(),
-      "All motors engaged at their current positions; joint limits are enforced immediately");
-  } catch (const std::exception & error) {
-    RCLCPP_ERROR(get_logger(), "Safe Start activation failed: %s", error.what());
-    captureFaultDiagnostics();
-    publishDiagnostics(true);
-    safeStop();
+  const auto & logger = get_logger();
+  if (!motor_manager_) {
+    RCLCPP_ERROR(logger, "on_activate called before on_configure succeeded");
     return hardware_interface::CallbackReturn::ERROR;
   }
+
+  if (!wait_for_fresh_feedback_and_no_faults()) {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  for (const auto & joint : joints_) {
+    if (!activate_joint(joint)) {
+      RCLCPP_ERROR(
+        logger, "Activation failed at joint '%s' -- stopping all motors (no partial "
+        "activation)", joint.name.c_str());
+      safe_stop_all();
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+  }
+
+  active_ = true;
+  last_write_time_ = std::chrono::steady_clock::now();
+  last_feedback_request_time_ = last_write_time_;
+  RCLCPP_INFO(logger, "QuattroSystem activated: %zu joints in closed-loop control", joints_.size());
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 hardware_interface::CallbackReturn QuattroSystem::on_deactivate(const rclcpp_lifecycle::State &)
 {
-  safeStop();
-  return hardware_interface::CallbackReturn::SUCCESS;
-}
-hardware_interface::CallbackReturn QuattroSystem::on_shutdown(const rclcpp_lifecycle::State &)
-{
-  safeStop();
-  managers_.clear();
+  safe_stop_all();
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-void QuattroSystem::requestMotorTelemetry()
-{
-  for (auto & joint : joints_) {
-    auto & motor = joint.manager->motor(joint.node_id);
-    motor.requestIq();
-    motor.requestBusVoltageCurrent();
-  }
-}
-
-void QuattroSystem::requestMotorFeedback(std::size_t motor_count)
-{
-  const auto count = std::min(motor_count, joints_.size());
-  for (std::size_t index = 0; index < count; ++index) {
-    joints_[index].manager->motor(joints_[index].node_id).requestEncoderEstimates();
-  }
-}
-
-void QuattroSystem::captureFaultDiagnostics()
-{
-  constexpr std::array<gim6010_driver::ErrorType, 4> error_types{{
-    gim6010_driver::ErrorType::kMotor,
-    gim6010_driver::ErrorType::kEncoder,
-    gim6010_driver::ErrorType::kController,
-    gim6010_driver::ErrorType::kSystem}};
-  try {
-    for (const auto type : error_types) {
-      for (auto & joint : joints_) {
-        joint.manager->motor(joint.node_id).requestError(type);
-      }
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
-      while (std::chrono::steady_clock::now() < deadline) {
-        pollManagers();
-        const bool complete = std::all_of(
-          joints_.begin(), joints_.end(), [type](const Joint & joint) {
-            return joint.manager->motor(joint.node_id).hasError(type);
-          });
-        if (complete) {break;}
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
-      }
-    }
-    requestMotorTelemetry();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
-    while (std::chrono::steady_clock::now() < deadline) {
-      pollManagers();
-      const bool complete = std::all_of(joints_.begin(), joints_.end(), [](const Joint & joint) {
-            return joint.manager->motor(joint.node_id).hasBusVoltageCurrent();
-      });
-      if (complete) {break;}
-      std::this_thread::sleep_for(std::chrono::milliseconds{1});
-    }
-    for (const auto & joint : joints_) {
-      const auto & motor = joint.manager->motor(joint.node_id);
-      const auto motor_error = motor.hasError(gim6010_driver::ErrorType::kMotor) ?
-        motor.error(gim6010_driver::ErrorType::kMotor) : 0U;
-      const auto encoder_error = motor.hasError(gim6010_driver::ErrorType::kEncoder) ?
-        motor.error(gim6010_driver::ErrorType::kEncoder) : 0U;
-      const auto controller_error = motor.hasError(gim6010_driver::ErrorType::kController) ?
-        motor.error(gim6010_driver::ErrorType::kController) : 0U;
-      const auto system_error = motor.hasError(gim6010_driver::ErrorType::kSystem) ?
-        motor.error(gim6010_driver::ErrorType::kSystem) : 0U;
-      const double voltage = motor.hasBusVoltageCurrent() ?
-        motor.busVoltageCurrent().voltage : std::numeric_limits<double>::quiet_NaN();
-      RCLCPP_ERROR(
-        get_logger(),
-        "Motor fault details: joint=%s interface=%s can_id=%u motor=%s encoder=%s "
-        "controller=%s system=%s(%s) bus_voltage=%.3fV",
-        joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
-        hexValue(motor_error).c_str(), hexValue(encoder_error).c_str(),
-        hexValue(controller_error).c_str(), hexValue(system_error).c_str(),
-        systemErrorName(system_error).c_str(), voltage);
-    }
-  } catch (const std::exception & error) {
-    RCLCPP_ERROR(get_logger(), "Failed to collect motor fault details: %s", error.what());
-  }
-}
-
-void QuattroSystem::publishDiagnostics(bool force)
-{
-  if (!diagnostics_publisher_) {return;}
-  const auto now = std::chrono::steady_clock::now();
-  if (!force && now < next_diagnostics_publish_) {return;}
-  next_diagnostics_publish_ = now + std::chrono::seconds{1};
-
-  diagnostic_msgs::msg::DiagnosticArray array;
-  array.header.stamp = get_node()->now();
-  array.status.reserve(joints_.size());
-  for (const auto & joint : joints_) {
-    const auto & motor = joint.manager->motor(joint.node_id);
-    diagnostic_msgs::msg::DiagnosticStatus status;
-    status.name = "quattro_hardware/" + joint.name;
-    status.hardware_id = joint.can_interface + ":" + std::to_string(joint.node_id);
-    status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
-    status.message = "operational";
-    if (!motor.hasHeartbeat() || motor.heartbeatStale(heartbeat_timeout_)) {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-      status.message = "heartbeat unavailable or stale";
-    } else {
-      const auto & heartbeat = motor.heartbeat();
-      if (heartbeat.axis_error != 0U ||
-        (heartbeat.flags & kHeartbeatFaultMask) != 0U ||
-        heartbeat.axis_state != kClosedLoopControl)
-      {
-        status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-        status.message = "motor fault or not in closed-loop control";
-      }
-      status.values.push_back(diagnosticValue("axis_error", hexValue(heartbeat.axis_error)));
-      status.values.push_back(
-        diagnosticValue("axis_state", std::to_string(heartbeat.axis_state)));
-      status.values.push_back(diagnosticValue("flags", hexValue(heartbeat.flags)));
-      status.values.push_back(diagnosticValue("life", std::to_string(heartbeat.life)));
-    }
-    status.values.push_back(
-      diagnosticValue("missed_heartbeats", std::to_string(motor.missedHeartbeats())));
-    status.values.push_back(diagnosticValue("control_method",
-        control_method_ == ControlMethod::kDirectPosition ? "direct_position" :
-        control_method_ == ControlMethod::kDirectVelocity ? "direct_velocity" :
-        control_method_ == ControlMethod::kDirectTorque ? "direct_torque" : "mit"));
-    if (motor.hasFeedback()) {
-      status.values.push_back(diagnosticValue("feedback_age_ms", std::to_string(
-          std::chrono::duration_cast<std::chrono::milliseconds>(motor.feedbackAge()).count())));
-      status.values.push_back(diagnosticValue("position_rad",
-          std::to_string(motor.feedback().output_position_rad)));
-      status.values.push_back(diagnosticValue("velocity_rad_s",
-          std::to_string(motor.feedback().output_velocity_rad_s)));
-      status.values.push_back(diagnosticValue("torque_nm",
-          std::to_string(motor.feedback().output_torque_nm)));
-    }
-    if (motor.hasHeartbeat()) {
-      status.values.push_back(diagnosticValue("heartbeat_age_ms", std::to_string(
-          std::chrono::duration_cast<std::chrono::milliseconds>(motor.heartbeatAge()).count())));
-    }
-    if (motor.hasBusVoltageCurrent()) {
-      status.values.push_back(diagnosticValue(
-          "bus_voltage_v", std::to_string(motor.busVoltageCurrent().voltage)));
-      status.values.push_back(diagnosticValue(
-          "bus_current_a", std::to_string(motor.busVoltageCurrent().current)));
-    }
-    if (motor.hasIq()) {
-      status.values.push_back(diagnosticValue(
-          "iq_setpoint_a", std::to_string(motor.iq().setpoint)));
-      status.values.push_back(diagnosticValue(
-          "iq_measured_a", std::to_string(motor.iq().measured)));
-    }
-    for (const auto type : {gim6010_driver::ErrorType::kMotor,
-        gim6010_driver::ErrorType::kEncoder, gim6010_driver::ErrorType::kController,
-        gim6010_driver::ErrorType::kSystem})
-    {
-      if (motor.hasError(type)) {
-        status.values.push_back(diagnosticValue(
-            "error_type_" + std::to_string(static_cast<unsigned>(type)),
-            hexValue(motor.error(type))));
-      }
-    }
-    array.status.push_back(std::move(status));
-  }
-  for (const auto & manager_entry : managers_) {
-    const auto & error = manager_entry.second->canErrorStatus();
-    diagnostic_msgs::msg::DiagnosticStatus status;
-    status.name = "quattro_hardware/can/" + manager_entry.first;
-    status.hardware_id = manager_entry.first;
-    status.level = error.bus_off_frames > 0U ?
-      diagnostic_msgs::msg::DiagnosticStatus::ERROR :
-      (error.passive_frames > 0U || error.warning_frames > 0U ?
-      diagnostic_msgs::msg::DiagnosticStatus::WARN :
-      diagnostic_msgs::msg::DiagnosticStatus::OK);
-    status.message = error.bus_off_frames > 0U ? "CAN bus-off observed" :
-      (error.total_frames > 0U ? "CAN error frames observed" : "CAN bus healthy");
-    status.values.push_back(diagnosticValue("error_frames", std::to_string(error.total_frames)));
-    status.values.push_back(diagnosticValue("ack_error_frames",
-        std::to_string(error.ack_error_frames)));
-    status.values.push_back(diagnosticValue("warning_frames",
-        std::to_string(error.warning_frames)));
-    status.values.push_back(diagnosticValue("passive_frames",
-        std::to_string(error.passive_frames)));
-    status.values.push_back(diagnosticValue("bus_off_frames",
-        std::to_string(error.bus_off_frames)));
-    status.values.push_back(diagnosticValue("tx_error_counter",
-        std::to_string(error.tx_error_counter)));
-    status.values.push_back(diagnosticValue("rx_error_counter",
-        std::to_string(error.rx_error_counter)));
-    status.values.push_back(diagnosticValue("rx_dropped_frames",
-        std::to_string(error.rx_dropped_frames)));
-    array.status.push_back(std::move(status));
-  }
-  diagnostics_publisher_->publish(array);
-}
-
-// Runtime position/velocity state has exactly one source: the feedback
-// GIM6010-8's single onboard encoder delivers via Get_Encoder_Estimates
-// (0x009) or, in MIT mode, the MIT feedback frame (0x008) -- both decoded
-// by gim6010_driver and exposed as Gim6010Motor::feedback(). There is no
-// secondary encoder to read here, and a stale/missing feedback below always
-// becomes a fault (see the feedbackStale() branch) rather than falling back
-// to anything else.
 hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  try {
-    const auto now = std::chrono::steady_clock::now();
-    if (active_ && control_method_ != ControlMethod::kMit &&
-      now >= next_feedback_request_)
-    {
-      requestMotorFeedback(joints_.size());
-      next_feedback_request_ = now + feedback_request_period_;
+  if (!motor_manager_) {
+    return hardware_interface::return_type::ERROR;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (active_ && has_prior_read_time_ && (now - last_read_time_) > scheduling_warning_) {
+    RCLCPP_WARN(
+      get_logger(), "read() scheduling gap %ld ms exceeds scheduling_warning_ms (%ld ms) -- "
+      "not a fault by itself, but watch for repeated warnings",
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - last_read_time_).count(),
+      scheduling_warning_.count());
+  }
+  last_read_time_ = now;
+  has_prior_read_time_ = true;
+
+  motor_manager_->poll();
+
+  if (now - last_feedback_request_time_ >= feedback_request_period_) {
+    for (const auto & joint : joints_) {
+      motor_manager_->request_encoder_estimate(joint.node_id);
     }
-    pollManagers();
-    if (active_) {
-      for (const auto & manager_entry : managers_) {
-        const auto state = manager_entry.second->canErrorStatus().state;
-        if (state == gim6010_driver::CanBusState::kBusOff) {
-          fault_reason_ = FaultReason::kCanBusOff;
-          throw std::runtime_error("CAN bus-off detected on " + manager_entry.first);
+    last_feedback_request_time_ = now;
+  }
+
+  bool faulted = false;
+  for (const auto & joint : joints_) {
+    const auto * motor = motor_manager_->motor(joint.node_id);
+
+    double position_rad = std::numeric_limits<double>::quiet_NaN();
+    double velocity_rad_s = std::numeric_limits<double>::quiet_NaN();
+    double effort_Nm = std::numeric_limits<double>::quiet_NaN();
+
+    if (motor != nullptr) {
+      if (control_method_ == ControlMethod::kMit) {
+        if (const auto feedback = motor->last_mit_feedback()) {
+          position_rad = mit_output_rad_to_joint_rad(feedback->position_rad, joint.calibration);
+          velocity_rad_s =
+            mit_output_rad_s_to_joint_rad_s(feedback->velocity_rad_s, joint.calibration);
+          effort_Nm = mit_output_Nm_to_joint_Nm(feedback->torque_Nm, joint.calibration);
         }
-        if (state == gim6010_driver::CanBusState::kErrorPassive) {
-          fault_reason_ = FaultReason::kCanPassive;
-          throw std::runtime_error("CAN error-passive detected on " + manager_entry.first);
+      } else {
+        if (const auto estimate = motor->last_encoder_estimate()) {
+          position_rad = motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
+          velocity_rad_s = motor_rev_s_to_joint_rad_s(estimate->velocity_rev_s, joint.calibration);
         }
+        // effort_Nm stays NaN for direct_position/velocity/torque: no
+        // measured-torque path is wired in for Direct modes yet
+        // (docs/packages/quattro_hardware.md section 3).
       }
     }
-    for (auto & joint : joints_) {
-      const auto & motor = joint.manager->motor(joint.node_id);
-      if (active_ && motor.feedbackStale(feedback_timeout_)) {
-        fault_reason_ = FaultReason::kFeedbackTimeout;
-        RCLCPP_ERROR(get_logger(), "Stale feedback from %s", joint.name.c_str());
-        captureFaultDiagnostics();
-        publishDiagnostics(true);
-        safeStop();
-        return hardware_interface::return_type::ERROR;
-      }
-      if (active_ && motor.heartbeatStale(heartbeat_timeout_)) {
-        fault_reason_ = FaultReason::kHeartbeatTimeout;
-        RCLCPP_ERROR(get_logger(), "Stale heartbeat from %s", joint.name.c_str());
-        captureFaultDiagnostics();
-        publishDiagnostics(true);
-        safeStop();
-        return hardware_interface::return_type::ERROR;
-      }
-      if (active_ && motor.hasHeartbeat()) {
-        const auto & heartbeat = motor.heartbeat();
-        if (heartbeat.axis_error != 0U ||
-          (heartbeat.flags & kHeartbeatFaultMask) != 0U ||
-          heartbeat.axis_state != kClosedLoopControl)
-        {
-          fault_reason_ = FaultReason::kMotorFault;
-          RCLCPP_ERROR(
-            get_logger(),
-            "Motor left closed-loop control: joint=%s interface=%s can_id=%u "
-            "axis_error=%s axis_state=%u flags=%s life=%u",
-            joint.name.c_str(), joint.can_interface.c_str(), static_cast<unsigned>(joint.node_id),
-            hexValue(heartbeat.axis_error).c_str(), static_cast<unsigned>(heartbeat.axis_state),
-            hexValue(heartbeat.flags).c_str(), static_cast<unsigned>(heartbeat.life));
-          captureFaultDiagnostics();
-          publishDiagnostics(true);
-          safeStop();
-          return hardware_interface::return_type::ERROR;
-        }
-        if (motor.missedHeartbeats() > joint.reported_missed_heartbeats) {
-          RCLCPP_WARN(
-            get_logger(), "Heartbeat gap detected: joint=%s total_missed=%llu",
-            joint.name.c_str(),
-            static_cast<unsigned long long>(motor.missedHeartbeats()));
-          joint.reported_missed_heartbeats = motor.missedHeartbeats();
-        }
-      }
-      if (!motor.hasFeedback()) {continue;}
-      const auto & feedback = motor.feedback();
-      const JointTransform transform(joint.direction, joint.offset);
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_POSITION),
-        transform.toJointPosition(feedback.output_position_rad));
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_VELOCITY),
-        transform.toJointVelocity(feedback.output_velocity_rad_s));
-      set_state(interfaceKey(joint, hardware_interface::HW_IF_EFFORT),
-        transform.toJointEffort(feedback.output_torque_nm));
+
+    set_state<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION, position_rad);
+    set_state<double>(joint.name + "/" + hardware_interface::HW_IF_VELOCITY, velocity_rad_s);
+    set_state<double>(joint.name + "/" + hardware_interface::HW_IF_EFFORT, effort_Nm);
+
+    if (!active_ || motor == nullptr) {
+      continue;
     }
-    if (active_ && now >= next_telemetry_request_) {
-      auto & joint = joints_.at(next_telemetry_motor_);
-      auto & motor = joint.manager->motor(joint.node_id);
-      motor.requestIq();
-      motor.requestBusVoltageCurrent();
-      next_telemetry_motor_ = (next_telemetry_motor_ + 1U) % joints_.size();
-      const auto slot_period = std::max(
-        std::chrono::milliseconds{1},
-        std::chrono::milliseconds{
-          telemetry_period_.count() / static_cast<std::int64_t>(joints_.size())});
-      next_telemetry_request_ = now + slot_period;
+    if (!motor->has_fresh_feedback(feedback_timeout_, now)) {
+      RCLCPP_ERROR(get_logger(), "Joint '%s': stale feedback", joint.name.c_str());
+      faulted = true;
     }
-    publishDiagnostics();
-  } catch (const std::exception & error) {
-    if (fault_reason_ == FaultReason::kNone) {fault_reason_ = FaultReason::kCanIo;}
-    RCLCPP_ERROR(get_logger(), "CAN read failed: %s", error.what());
-    captureFaultDiagnostics();
-    publishDiagnostics(true);
-    safeStop();
+    if (!motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
+      RCLCPP_ERROR(get_logger(), "Joint '%s': stale heartbeat", joint.name.c_str());
+      faulted = true;
+    }
+    if (const auto error = motor->last_error()) {
+      if (error->active_errors != 0 || error->disarm_reason != 0) {
+        RCLCPP_ERROR(
+          get_logger(), "Joint '%s': axis fault (active_errors=0x%08X, disarm_reason=0x%08X)",
+          joint.name.c_str(), error->active_errors, error->disarm_reason);
+        faulted = true;
+      }
+    }
+  }
+
+  if (active_) {
+    for (const auto & bus : buses_) {
+      if (motor_manager_->bus_state(bus) != gim6010_driver::CanBusState::kActive) {
+        RCLCPP_ERROR(
+          get_logger(), "CAN bus '%s' is not ERROR-ACTIVE (state=%d)", bus.c_str(),
+          static_cast<int>(motor_manager_->bus_state(bus)));
+        faulted = true;
+      }
+    }
+    if (now - last_write_time_ > command_timeout_) {
+      RCLCPP_ERROR(
+        get_logger(), "Command watchdog expired: write() has not run for %ld ms",
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_write_time_).count());
+      faulted = true;
+    }
+  }
+
+  if (faulted) {
+    safe_stop_all();
     return hardware_interface::return_type::ERROR;
   }
   return hardware_interface::return_type::OK;
@@ -973,130 +735,79 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
 
 hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (!active_) {return hardware_interface::return_type::OK;}
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_write_ > scheduling_warning_) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_node()->get_clock(), 1000,
-      "controller_manager scheduling delay exceeded warning threshold");
-  }
-  if (now - last_write_ > command_timeout_) {
-    fault_reason_ = FaultReason::kCommandTimeout;
-    RCLCPP_ERROR(get_logger(), "Hardware command watchdog expired");
-    captureFaultDiagnostics();
-    publishDiagnostics(true);
-    safeStop();
-    return hardware_interface::return_type::ERROR;
-  }
-  try {
-    std::vector<double> commands;
-    commands.reserve(joints_.size());
-    for (const auto & joint : joints_) {
-      const double command = get_command<double>(interfaceKey(joint, commandInterfaceName()));
-      if (!std::isfinite(command)) {
-        throw std::out_of_range(
-                joint.name + " " + commandInterfaceName() + " command is not finite");
-      }
-      if (command < joint.lower || command > joint.upper) {
-        throw std::out_of_range(
-                joint.name + " " + commandInterfaceName() + " command " +
-                std::to_string(command) +
-                " violates limits [" + std::to_string(joint.lower) + ", " +
-                std::to_string(joint.upper) + "]");
-      }
-      commands.push_back(command);
-    }
-
-    for (std::size_t index = 0; index < joints_.size(); ++index) {
-      const auto & joint = joints_[index];
-      const double command = commands[index];
-      auto & motor = joint.manager->motor(joint.node_id);
-      const JointTransform transform(joint.direction, joint.offset);
-      if (control_method_ == ControlMethod::kDirectPosition) {
-        const double output_position = transform.toOutputPosition(command);
-        motor.setPosition(
-          static_cast<float>(output_position * joint.gear_ratio / kTwoPi));
-      } else if (control_method_ == ControlMethod::kDirectVelocity) {
-        motor.setVelocity(
-          static_cast<float>(
-            transform.toOutputVelocity(command) * joint.gear_ratio / kTwoPi));
-      } else if (control_method_ == ControlMethod::kDirectTorque) {
-        motor.setTorque(static_cast<float>(
-            transform.toOutputEffort(command) / joint.gear_ratio));
-      } else {
-        const double output_position = transform.toOutputPosition(command);
-        const double velocity = get_command<double>(
-          interfaceKey(joint, hardware_interface::HW_IF_VELOCITY));
-        const double kp = get_command<double>(interfaceKey(joint, "kp"));
-        const double kd = get_command<double>(interfaceKey(joint, "kd"));
-        const double effort = get_command<double>(
-          interfaceKey(joint, hardware_interface::HW_IF_EFFORT));
-        if (!std::isfinite(velocity) || velocity < -4.0 || velocity > 4.0 ||
-          !std::isfinite(kp) || kp < 0.0 || kp > 500.0 ||
-          !std::isfinite(kd) || kd < 0.0 || kd > 5.0 ||
-          !std::isfinite(effort) || effort < -10.0 || effort > 10.0)
-        {
-          throw std::out_of_range(joint.name + " has an invalid MIT command field");
-        }
-        motor.sendMitCommand(
-          {output_position, transform.toOutputVelocity(velocity), kp, kd,
-            transform.toOutputEffort(effort)});
-      }
-    }
-    last_write_ = now;
-  } catch (const std::exception & error) {
-    fault_reason_ = FaultReason::kInvalidCommand;
-    RCLCPP_ERROR(get_logger(), "Unsafe command rejected: %s", error.what());
-    captureFaultDiagnostics();
-    publishDiagnostics(true);
-    safeStop();
-    return hardware_interface::return_type::ERROR;
-  }
-  return hardware_interface::return_type::OK;
-}
-
-hardware_interface::return_type QuattroSystem::prepare_command_mode_switch(
-  const std::vector<std::string> & start_interfaces, const std::vector<std::string> &)
-{
-  if (control_method_ != ControlMethod::kMit || start_interfaces.empty()) {
+  if (!motor_manager_ || !active_) {
     return hardware_interface::return_type::OK;
   }
-  const std::unordered_set<std::string> requested(start_interfaces.begin(), start_interfaces.end());
+
+  last_write_time_ = std::chrono::steady_clock::now();
+
+  bool any_rejected = false;
   for (const auto & joint : joints_) {
-    for (const auto * interface_name : {"position", "velocity", "kp", "kd", "effort"}) {
-      if (requested.count(interfaceKey(joint, interface_name)) == 0U) {
-        RCLCPP_ERROR(
-          get_logger(), "MIT controller must claim all five command interfaces for every joint");
-        return hardware_interface::return_type::ERROR;
+    switch (control_method_) {
+      case ControlMethod::kDirectPosition: {
+        const double joint_rad = get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
+        gim6010_driver::SetInputPosCommand command;
+        command.position_rev =
+          static_cast<float>(joint_rad_to_motor_rev(joint_rad, joint.calibration));
+        if (!motor_manager_->send_set_input_pos(joint.node_id, command)) {
+          RCLCPP_ERROR(get_logger(), "Joint '%s': position command rejected", joint.name.c_str());
+          any_rejected = true;
+        }
+        break;
+      }
+      case ControlMethod::kDirectVelocity: {
+        const double joint_rad_s =
+          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_VELOCITY);
+        const float motor_rev_s =
+          static_cast<float>(joint_rad_s_to_motor_rev_s(joint_rad_s, joint.calibration));
+        if (!motor_manager_->send_set_input_vel(joint.node_id, motor_rev_s, 0.0F)) {
+          RCLCPP_ERROR(get_logger(), "Joint '%s': velocity command rejected", joint.name.c_str());
+          any_rejected = true;
+        }
+        break;
+      }
+      case ControlMethod::kDirectTorque: {
+        const double joint_Nm =
+          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_EFFORT);
+        const float motor_Nm = static_cast<float>(joint_Nm_to_motor_Nm(joint_Nm, joint.calibration));
+        if (!motor_manager_->send_set_input_torque(joint.node_id, motor_Nm)) {
+          RCLCPP_ERROR(get_logger(), "Joint '%s': torque command rejected", joint.name.c_str());
+          any_rejected = true;
+        }
+        break;
+      }
+      case ControlMethod::kMit: {
+        const double joint_position =
+          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
+        const double joint_velocity =
+          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_VELOCITY);
+        const double joint_effort =
+          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_EFFORT);
+        gim6010_driver::MitCommand command;
+        command.position_rad = joint_rad_to_mit_output_rad(joint_position, joint.calibration);
+        command.velocity_rad_s =
+          joint_rad_s_to_mit_output_rad_s(joint_velocity, joint.calibration);
+        command.kp = get_command<double>(joint.name + "/kp");
+        command.kd = get_command<double>(joint.name + "/kd");
+        command.torque_Nm = joint_Nm_to_mit_output_Nm(joint_effort, joint.calibration);
+        if (!motor_manager_->send_mit_command(joint.node_id, command)) {
+          RCLCPP_ERROR(
+            get_logger(), "Joint '%s': MIT command outside protocol range, rejected -- not "
+            "clamping", joint.name.c_str());
+          any_rejected = true;
+        }
+        break;
       }
     }
+  }
+
+  if (any_rejected) {
+    safe_stop_all();
+    return hardware_interface::return_type::ERROR;
   }
   return hardware_interface::return_type::OK;
 }
 
-void QuattroSystem::safeStop() noexcept
-{
-  active_ = false;
-  for (auto & manager : managers_) {
-    manager.second->disableAll();
-  }
-}
-
-std::string QuattroSystem::interfaceKey(const Joint & joint, const char * interface_name) const
-{
-  return joint.name + "/" + interface_name;
-}
-
-const char * QuattroSystem::commandInterfaceName() const noexcept
-{
-  switch (control_method_) {
-    case ControlMethod::kDirectPosition:
-    case ControlMethod::kMit: return hardware_interface::HW_IF_POSITION;
-    case ControlMethod::kDirectVelocity: return hardware_interface::HW_IF_VELOCITY;
-    case ControlMethod::kDirectTorque: return hardware_interface::HW_IF_EFFORT;
-  }
-  return hardware_interface::HW_IF_POSITION;
-}
 }  // namespace quattro_hardware
 
 PLUGINLIB_EXPORT_CLASS(quattro_hardware::QuattroSystem, hardware_interface::SystemInterface)

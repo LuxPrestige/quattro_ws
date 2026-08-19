@@ -7,10 +7,9 @@
 세부 아키텍처와 실행법은 각각 다음 문서를 따른다.
 
 - `docs/architecture.md`
+- `docs/packages/*.md`
 - `docs/gazebo.md`
-- `docs/gim6010_hardware.md`
 - `docs/calibration.md`
-- `docs/hardware_bringup.md`
 
 ## 현재 패키지
 
@@ -19,12 +18,15 @@ src/
 ├── quattro/
 ├── quattro_description/
 ├── quattro_bringup/
+├── quattro_controllers/
 ├── quattro_gazebo/
-├── quattro_hardware/
+├── quattro_hardware/    # 코드 없음, 재작성 중
 ├── quattro_sensors/
 ├── quattro_teleop/
-└── gim6010_driver/
+└── gim6010_driver/       # 구현됨
 ```
+
+패키지별 세부 구현은 `docs/packages/<패키지명>.md`를 따른다.
 
 ## 구현된 주요 기능
 
@@ -68,40 +70,29 @@ src/
 
 실제 Raspberry Pi I2C 조건에서 계속 검증이 필요하다.
 
+### `quattro_controllers`
+
+- `quattro_controllers/MitTrajectoryController` (`ros2_control` 플러그인, `pluginlib` 등록 완료)
+- 관절당 `position/velocity/kp/kd/effort` 5개 command interface 동시 claim
+- `~/joint_trajectory` 구독, 선형 보간, `on_activate`/`on_deactivate` 안전 hold
+- `kp ∈ [0, 500]`, `kd ∈ [0, 5]` 범위 검증(GIM6010 MIT 프레임 12-bit 필드 근거)
+
+세부 내용은 `docs/packages/quattro_controllers.md`.
+
 ### `gim6010_driver`
 
-- Linux SocketCAN RAII wrapper
-- standard CAN frame 송수신
-- CAN error frame 및 warning/passive/bus-off 진단
-- CAN Simple arbitration ID
-- Direct Position/Velocity/Torque 및 MIT command encode/decode
-- Position Filter/Trapezoidal input mode와 runtime controller gain 설정
-- heartbeat decode
-- error/bus voltage/q-axis current diagnostics
-- encoder estimates (`0x009`, runtime의 유일한 위치/속도 source)
-- encoder count 조회 (`0x00A`, startup 진단 전용, runtime feedback에 미사용)
-- `Get_Error(0x003)` 카테고리별 응답 폭(motor uint64 / 나머지 uint32)과 무응답-tag 구조를 반영한 요청 큐 기반 매칭
-- 단일 GIM6010 motor abstraction
-- 다중 motor routing
+- Linux SocketCAN RAII wrapper, non-blocking, error frame(warning/passive/bus-off) 파싱
+- CAN Simple 전체 명령(axis 상태, Direct Position/Velocity/Torque, 리밋/게인, 텔레메트리, Get_Error) encode/decode
+- MIT motion control encode/decode(범위 밖 입력은 clamp 없이 거부)
+- 다중 bus/다중 모터 라우팅(`MotorManager`), 특정 관절 구성에 하드코딩되지 않아 다른 프로젝트에서도 재사용 가능
+- 단일 모터 read-only 진단 CLI(`gim6010_diagnostic`)
+- gtest 30개 통과(실제 CAN 버스 없이 encode/decode/routing 검증, `docs/packages/gim6010_driver.md` 6절). `quattro_hardware`가 아직 없어 실기 연동은 미검증.
+
+세부 내용은 `docs/packages/gim6010_driver.md`.
 
 ### `quattro_hardware`
 
-- `hardware_interface::SystemInterface`
-- 12축 joint ↔ motor mapping
-- direction / offset 변환
-- Safe Start
-- 현재 위치 hold
-- Direct Position enable 전 current-position target 준비
-- MIT 전용 5-command-interface와 Kp engagement
-- MIT `JointTrajectory` controller와 Direct Position 선택형 bringup
-- `read()` / `write()`
-- feedback timeout
-- heartbeat timeout
-- command watchdog
-- fault diagnostics
-- safe stop
-- calibration GUI
-- read-only 단일 모터 diagnostic CLI
+**코드 없음 (재작성 중).** 소비 측 계약(`ros2_control` 파라미터 이름, command/state interface 목록)은 `quattro_description`의 Xacro와 `quattro_bringup`/`quattro_controllers`에 이미 고정되어 있다. 설계 명세는 `docs/packages/quattro_hardware.md`.
 
 ### `quattro_bringup`
 
@@ -117,116 +108,29 @@ src/
 
 ## 현재 하드웨어 구성
 
-- SteadyWin GIM6010-8 × 12 (온보드 인코더 1개, secondary encoder 없음 — `docs/gim6010_hardware.md` 11절)
+- SteadyWin GIM6010-8 × 12 (온보드 인코더 1개, secondary encoder 없음 — `docs/packages/quattro_hardware.md` 0절)
 - GDS68
 - CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - `can0`: CAN ID 0~5
 - `can1`: CAN ID 6~11
 - 500 kbit/s
 
-상세 매핑은 `docs/gim6010_hardware.md`를 따른다.
+상세 매핑은 `docs/packages/quattro_hardware.md`(0절)를 따른다.
 
 ## 현재 중요한 실기 이슈
 
-### 1. 모터가 운전 중 비활성화되는 원인 분리
+`gim6010_driver`는 구현되었지만 실제 CAN 버스·모터 연동은 아직 검증되지 않았고, `quattro_hardware`는 코드가 없어 두 패키지를 통한 실기 경로 자체가 없다. 아래는 코드 검증이 아니라 하드웨어/매뉴얼 사실에 근거한, 구현·연동 시 반드시 다뤄야 할 위험이다. 상세 근거는 `docs/packages/gim6010_driver.md`, `docs/packages/quattro_hardware.md`.
 
-현재 `QuattroSystem`은 다음 조건에서 safe stop을 수행한다.
+- **전원 재인가 후 멀티턴 위치 모호성 — 상충하는 증거, 실기 확인 필요**: 매뉴얼 BOM은 인코더 칩을 로터측 `MA732` 1개로만 기재하지만(이 경우 감속비 8:1로 인해 로터 절대각이 출력축 위치를 45° 간격으로만 구분), 실제 분해 사진 기반 제3자 보고(비공식)는 출력축 쪽에 별도 홀센서 기반 2차 encoder 보드가 있고 전원 재인가 후에도 회전수가 유지된다고 관찰했다(`docs/packages/quattro_hardware.md` 0절). 어느 쪽이 맞는지, 2차 encoder를 CAN으로 어떻게 읽는지 문서만으로 확정할 수 없어 6절의 벤치 시험(손으로 여러 바퀴 돌린 뒤 전원 재인가, `0x009`/`0x00A` 값 대조)으로 확인해야 한다.
+- **heartbeat 형식 firmware 의존성**: heartbeat decoder는 firmware `0.5.13+` 형식을 전제한다. 실제 12개 장치의 firmware version을 확인하기 전에는 검증 완료로 볼 수 없다.
+- **`Get_Error (0x03)` 응답 형식 가정 미검증**: `gim6010_driver`는 ODrive CAN Simple 표준 형식(active_errors/disarm_reason, 각 uint32, 요청 없이도 자기완결적으로 decode 가능)으로 구현했다(`docs/packages/gim6010_driver.md` 0절). 실기에서 다른 폭이나 카테고리별 응답이 관찰되면 그 즉시 이 가정과 `can_simple_messages.cpp`를 함께 수정해야 한다.
+- **RTR/주기 조회 미검증**: `0x009`/`0x00A`/`0x017`과 보정된 `0x003` 조회를 단일 모터에서 실기로 확인한 적이 없다.
+- **CAN adapter/kernel 조합의 에러 카운터 미검증**: warning/passive/bus-off/ACK/protocol/TRX/TX/RX 에러 카운터가 실제 CAN 어댑터·커널 조합에서 기대대로 잡히는지 확인이 필요하다.
+- **gain/limit 실측값 없음**: Position gain, MIT Kp/Kd, current limit은 로봇 실제 하중으로 결정해야 하며 매뉴얼 예시값(`20.0/0.16/0.32`)을 factory default로 가정하지 않는다.
+- **Raspberry Pi 5 + Docker 타이밍 미측정**: `update_rate=100 Hz`에서 feedback/heartbeat/scheduling watchdog 값(`docs/packages/quattro_hardware.md` 7절 — 원칙만 정의, 구체적 ms 값은 실측 후 확정)이 실제 jitter 대비 적절한지 실측이 필요하다.
+- **`quattro_sensors`(BNO085)**: Raspberry Pi 5 실제 I2C 조건에서 계속 검증이 필요하다.
 
-- command watchdog timeout
-- stale feedback
-- stale heartbeat
-- motor가 closed-loop를 이탈
-- axis fault
-- 잘못된 joint command
-
-따라서 실제 GDS68 fault와 소프트웨어가 의도적으로 전체 motor를 disable한 경우를 구분해야 한다.
-
-필요한 진단:
-
-```bash
-ip -details -statistics link show can0
-ip -details -statistics link show can1
-candump -e -tz can0
-candump -e -tz can1
-```
-
-그리고 ROS 로그의 다음 항목을 함께 확인한다.
-
-```text
-Hardware command watchdog expired
-Stale feedback
-Stale heartbeat
-Motor left closed-loop control
-Motor fault details
-```
-
-### 2. CAN error frame 실기 검증
-
-SocketCAN 계층과 `/diagnostics` 전달은 구현됐지만 실제 두 CAN bus에서 fault injection 검증이 필요하다.
-
-필요 항목:
-
-- error-warning / error-passive / bus-off fault injection
-- kernel 및 CAN adapter별 error frame 지원 확인
-- stale feedback과 CAN physical error 구분
-
-### 3. gain / current limit 실기 검증
-
-현재 gain과 current limit은 코드에 존재하지만 최종 안전값으로 확정된 상태가 아니다.
-
-일반 Position gain 자동 적용은 기본적으로 꺼져 있어 장치 값을 보존한다. 문서의 `20.0/0.16/0.32`는 제조사 tuning 예시이며 factory default로 확인된 값이 아니다.
-
-필요 항목:
-
-- 모터 전압 버전과 GDS68 사양 재확인
-- 단일 모터 저전류/저gain 시험
-- offset/direction 오설정 시 보호 동작 확인
-- 한 다리, 12축 순으로 확대
-
-### 4. calibration 검증
-
-실제 머신별 `calibration.yaml`은 Git에 저장하지 않는다.
-
-실기에서 확인할 항목:
-
-- 12개 CAN ID와 bus
-- direction
-- offset
-- encoder zero와 ROS joint zero 일치 여부
-
-## 아직 필요한 검증
-
-- 모든 gait 범위에서 URDF joint limit 준수
-- joint velocity / acceleration 제한
-- gait 시작/정지 transition 연속성
-- 실제 joystick axis/button 검증
-- IMU orientation과 PID 부호 실기 검증
-- contact sensor 실제 연결 및 stale/debounce
-- `/joint_states` 100 Hz 안정성
-- controller manager 100 Hz scheduling 안정성
-- 두 CAN bus의 장시간 부하 측정
-- timeout/fault 시 원인별 diagnostics
-- 로봇 지지 상태에서 12축 nominal stance
-- 실제 지면 보행
-
-## 권장 개발 순서
-
-현재는 기본 소프트웨어 구조가 이미 구현되어 있으므로 과거의 “description부터 처음 구현” 계획은 더 이상 기준으로 사용하지 않는다.
-
-다음 순서를 권장한다.
-
-1. 단일 GIM6010/GDS68 CAN 진단 안정화
-2. CAN error frame과 fault diagnostics 강화
-3. 단일 모터 gain/current/timeout 검증
-4. 머신별 12축 calibration 재검증
-5. 한 다리 3축 hold 및 작은 trajectory
-6. 12축 nominal stance hold
-7. controller 100 Hz 장시간 안정성 시험
-8. 지지대 상태 gait 시험
-9. IMU balance 결합
-10. 실제 지면 저속 gait
-11. contact feedback 결합
-12. 장시간 열/전원/CAN fault 시험
+12축 gait 시험으로 범위를 넓히기 전에 `docs/packages/quattro_hardware.md` 6절의 단일 모터부터 확대하는 시험 순서를 따른다.
 
 ## 문서 유지 규칙
 

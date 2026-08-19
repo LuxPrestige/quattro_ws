@@ -1,617 +1,552 @@
-#include <yaml-cpp/yaml.h>
+// Standalone Qt calibration GUI. Deliberately independent of ros2_control/
+// controller_manager (docs/packages/quattro_hardware.md section 5) -- it
+// talks to gim6010_driver directly and must not run at the same time as
+// hardware.launch.py (docs/calibration.md safety condition).
+//
+// Always drives motors via MIT (cmd 0x08) regardless of the runtime
+// hardware_control_method, using each joint's calibration.yaml kp/kd as the
+// MIT hold gain -- this is a fixed property of the calibration procedure
+// itself (docs/calibration.md), not of whatever control method the robot
+// will run afterward.
 
 #include <QApplication>
 #include <QCloseEvent>
-#include <QCommandLineOption>
-#include <QCommandLineParser>
-#include <QFont>
-#include <QFontDatabase>
-#include <QGridLayout>
+#include <QComboBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QString>
+#include <QThread>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <yaml-cpp/yaml.h>
+
 #include <array>
-#include <chrono>
-#include <cmath>
 #include <cstdio>
-#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "gim6010_driver/motor_manager.hpp"
+#include "quattro_hardware/joint_transform.hpp"
 
 namespace
 {
-constexpr double kPi = 3.14159265358979323846;
-constexpr double kJogRadians = kPi / 180.0;
-constexpr auto kFeedbackTimeout = std::chrono::milliseconds{2000};
-constexpr auto kFeedbackRequestInterval = std::chrono::milliseconds{100};
-constexpr std::uint8_t kClosedLoopControl = 8;
-constexpr std::uint8_t kHeartbeatFaultMask = 0x0F;
 
-struct JointDefinition
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kJogStepRad = kPi / 180.0;  // 1 degree
+constexpr float kCalibrationVelocityLimitRevS = 5.0F;
+constexpr float kCalibrationCurrentLimitA = 10.0F;
+constexpr double kFixedGearRatio = 8.0;
+
+// Fixed hardware wiring/mounting facts (docs/packages/quattro_hardware.md
+// section 0) -- not user-configurable. A calibration.yaml that disagrees
+// with this table describes a different (or mis-wired) robot and is
+// rejected rather than trusted.
+struct CanonicalJoint
 {
   const char * name;
-  const char * label;
-  int direction;
+  uint8_t can_id;
+  const char * bus;
+  double direction;
 };
 
-constexpr std::array<JointDefinition, 12> kJoints = {{
-  {"front_left_hip_joint", "front_left_hip_joint (joint 0)", -1},
-  {"front_left_upper_leg_joint", "front_left_upper_leg_joint (joint 1)", -1},
-  {"front_left_lower_leg_joint", "front_left_lower_leg_joint (joint 2)", -1},
-  {"front_right_hip_joint", "front_right_hip_joint (joint 3)", -1},
-  {"front_right_upper_leg_joint", "front_right_upper_leg_joint (joint 4)", 1},
-  {"front_right_lower_leg_joint", "front_right_lower_leg_joint (joint 5)", 1},
-  {"back_left_hip_joint", "back_left_hip_joint (joint 6)", 1},
-  {"back_left_upper_leg_joint", "back_left_upper_leg_joint (joint 7)", -1},
-  {"back_left_lower_leg_joint", "back_left_lower_leg_joint (joint 8)", -1},
-  {"back_right_hip_joint", "back_right_hip_joint (joint 9)", 1},
-  {"back_right_upper_leg_joint", "back_right_upper_leg_joint (joint 10)", 1},
-  {"back_right_lower_leg_joint", "back_right_lower_leg_joint (joint 11)", 1},
-}};
+constexpr std::array<CanonicalJoint, 12> kCanonicalJoints = {
+  {{"front_left_hip_joint", 0, "can0", -1.0},
+    {"front_left_upper_leg_joint", 1, "can0", -1.0},
+    {"front_left_lower_leg_joint", 2, "can0", -1.0},
+    {"front_right_hip_joint", 3, "can0", -1.0},
+    {"front_right_upper_leg_joint", 4, "can0", 1.0},
+    {"front_right_lower_leg_joint", 5, "can0", 1.0},
+    {"back_left_hip_joint", 6, "can1", 1.0},
+    {"back_left_upper_leg_joint", 7, "can1", -1.0},
+    {"back_left_lower_leg_joint", 8, "can1", -1.0},
+    {"back_right_hip_joint", 9, "can1", 1.0},
+    {"back_right_upper_leg_joint", 10, "can1", 1.0},
+    {"back_right_lower_leg_joint", 11, "can1", 1.0}}};
 
-void validateCalibration(const YAML::Node & root)
+struct CalibratedJoint
 {
-  const auto joints = root["joints"];
-  if (!joints || !joints.IsMap() || joints.size() != kJoints.size()) {
-    throw std::invalid_argument("The calibration YAML must contain exactly 12 joints.");
+  std::string name;
+  std::string can_bus;
+  uint8_t can_id{0};
+  double direction{1.0};
+  double offset{0.0};
+  double current_limit{5.0};
+  double kp{0.0};
+  double kd{0.0};
+};
+
+std::vector<CalibratedJoint> load_calibration(const std::string & path)
+{
+  const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node joints_node = root["joints"];
+  if (!joints_node) {
+    throw std::runtime_error("calibration file has no top-level 'joints' key: " + path);
   }
 
-  std::set<std::pair<std::string, int>> addresses;
-  for (const auto & expected : kJoints) {
-    const auto joint = joints[expected.name];
-    if (!joint) {
-      throw std::invalid_argument(std::string("Missing calibration entry: ") + expected.name);
+  std::vector<CalibratedJoint> result;
+  for (const auto & canonical : kCanonicalJoints) {
+    const YAML::Node joint_node = joints_node[canonical.name];
+    if (!joint_node) {
+      throw std::runtime_error(
+        std::string("calibration file is missing joint '") + canonical.name + "'");
     }
-    const int direction = joint["direction"].as<int>();
-    if (direction != expected.direction) {
-      throw std::invalid_argument(
-              std::string(expected.name) + " has a direction that differs from the reference.");
-    }
-    const int can_id = joint["can_id"].as<int>();
-    const auto can_interface = joint["can_interface"].as<std::string>();
-    if (can_id < 0 || can_id > 11) {
-      throw std::invalid_argument(std::string(expected.name) + " must use a CAN ID from 0 to 11.");
-    }
-    const std::string expected_interface = can_id <= 5 ? "can0" : "can1";
-    if (can_interface != expected_interface) {
-      throw std::invalid_argument(
-              std::string(expected.name) + " must use " + expected_interface + ".");
-    }
-    if (!addresses.emplace(can_interface, can_id).second) {
-      throw std::invalid_argument("The calibration YAML contains a duplicate CAN address.");
-    }
-    if (!std::isfinite(joint["offset"].as<double>()) ||
-      !std::isfinite(joint["kp"].as<double>()) ||
-      !std::isfinite(joint["kd"].as<double>()))
+
+    CalibratedJoint joint;
+    joint.name = canonical.name;
+    joint.can_bus = joint_node["can_interface"].as<std::string>();
+    joint.can_id = static_cast<uint8_t>(joint_node["can_id"].as<int>());
+    joint.direction = joint_node["direction"].as<double>();
+    joint.offset = joint_node["offset"].as<double>();
+    joint.current_limit = joint_node["current_limit"] ? joint_node["current_limit"].as<double>() : 5.0;
+    joint.kp = joint_node["kp"].as<double>();
+    joint.kd = joint_node["kd"].as<double>();
+
+    if (joint.can_bus != canonical.bus || joint.can_id != canonical.can_id ||
+      joint.direction != canonical.direction)
     {
-      throw std::invalid_argument(std::string(expected.name) +
-          " contains an invalid numeric value.");
+      throw std::runtime_error(
+        "joint '" + joint.name + "' can_interface/can_id/direction does not match the canonical "
+        "mapping (docs/packages/quattro_hardware.md section 0) -- refusing to load a file that "
+        "may describe the wrong robot");
     }
+    if (joint.kp < 0.0 || joint.kp > gim6010_driver::kMitKpMax || joint.kd < 0.0 ||
+      joint.kd > gim6010_driver::kMitKdMax)
+    {
+      throw std::runtime_error(
+        "joint '" + joint.name + "' kp/kd is outside the GIM6010 MIT range");
+    }
+
+    result.push_back(joint);
   }
+  return result;
 }
 
-void saveCalibration(
-  YAML::Node & root, const std::string & joint_name, double offset,
-  const std::filesystem::path & path)
+void save_calibration(const std::string & path, const std::vector<CalibratedJoint> & joints)
 {
-  root["joints"][joint_name]["offset"] = offset;
-  YAML::Emitter output;
-  output.SetDoublePrecision(15);
-  output << root;
-  if (!output.good()) {
-    throw std::runtime_error("Failed to serialize the calibration YAML.");
+  YAML::Node root = YAML::LoadFile(path);
+  YAML::Node joints_node = root["joints"];
+  for (const auto & joint : joints) {
+    YAML::Node joint_node = joints_node[joint.name];
+    joint_node["can_interface"] = joint.can_bus;
+    joint_node["can_id"] = static_cast<int>(joint.can_id);
+    joint_node["direction"] = static_cast<int>(joint.direction);
+    joint_node["offset"] = joint.offset;
+    joint_node["current_limit"] = joint.current_limit;
+    joint_node["kp"] = joint.kp;
+    joint_node["kd"] = joint.kd;
   }
 
-  const auto temporary = path.string() + ".tmp";
+  const std::string tmp_path = path + ".tmp";
   {
-    std::ofstream stream(temporary, std::ios::trunc);
-    if (!stream) {
-      throw std::runtime_error("Failed to open the temporary calibration file.");
+    std::ofstream out(tmp_path, std::ios::trunc);
+    if (!out) {
+      throw std::runtime_error("failed to open temp file for writing: " + tmp_path);
     }
-    stream << output.c_str() << '\n';
-    stream.flush();
-    if (!stream) {
-      throw std::runtime_error("Failed while writing the calibration file.");
-    }
+    out << root;
   }
-  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
-    std::filesystem::remove(temporary);
-    throw std::runtime_error("Failed to replace the calibration file.");
+  if (std::rename(tmp_path.c_str(), path.c_str()) != 0) {
+    throw std::runtime_error("failed to atomically replace calibration file: " + path);
   }
 }
+
+}  // namespace
 
 class CalibrationWindow : public QWidget
 {
 public:
-  explicit CalibrationWindow(const std::filesystem::path & calibration_file)
-  : calibration_file_(calibration_file), calibration_(YAML::LoadFile(calibration_file.string()))
+  CalibrationWindow(std::string calibration_file, std::vector<CalibratedJoint> joints)
+  : calibration_file_(std::move(calibration_file)), joints_(std::move(joints))
   {
-    validateCalibration(calibration_);
-    setWindowTitle("Quattro Joint Calibration");
-    setMinimumWidth(680);
-    buildInterface();
-    selectJoint(0);
+    enabled_.assign(joints_.size(), false);
+    target_joint_rad_.assign(joints_.size(), 0.0);
+
+    std::vector<gim6010_driver::MotorRoute> routes;
+    std::set<std::string> seen_buses;
+    for (const auto & joint : joints_) {
+      if (seen_buses.insert(joint.can_bus).second) {
+        buses_.push_back(joint.can_bus);
+      }
+      routes.push_back(gim6010_driver::MotorRoute{joint.can_id, joint.can_bus});
+    }
+    motor_manager_ = std::make_unique<gim6010_driver::MotorManager>(buses_, routes);
+    if (!motor_manager_->open()) {
+      QMessageBox::critical(this, "Calibration", "Failed to open one or more CAN buses");
+    }
+
+    build_ui();
+
+    timer_ = new QTimer(this);
+    connect(timer_, &QTimer::timeout, this, &CalibrationWindow::on_timer_tick);
+    timer_->start(50);
+
+    selected_index_ = joints_.empty() ? -1 : 0;
+    update_status_label();
   }
 
 protected:
   void closeEvent(QCloseEvent * event) override
   {
-    disableAllMotors();
-    event->accept();
+    for (size_t i = 0; i < joints_.size(); ++i) {
+      if (enabled_[i]) {
+        idle_motor(static_cast<int>(i));
+      }
+    }
+    if (motor_manager_) {
+      motor_manager_->close();
+    }
+    QWidget::closeEvent(event);
   }
 
 private:
-  void buildInterface()
+  void build_ui()
   {
-    auto * main_layout = new QVBoxLayout(this);
-    auto * warning = new QLabel(
-      "Support the robot securely and stop controller_manager and all other CAN control programs. "
-      "Each motor starts by holding its current position before any adjustment.");
-    warning->setWordWrap(true);
-    warning->setStyleSheet("QLabel { color: #b00020; font-weight: bold; }");
-    main_layout->addWidget(warning);
+    setWindowTitle("Quattro Calibration");
 
-    auto * joint_group = new QGroupBox("1. Select One Joint");
-    auto * joint_layout = new QGridLayout(joint_group);
-    for (std::size_t index = 0; index < kJoints.size(); ++index) {
-      auto * button = new QPushButton(kJoints[index].label);
-      button->setCheckable(true);
-      button->setMinimumHeight(54);
-      joint_buttons_[index] = button;
-      connect(button, &QPushButton::clicked, this, [this, index]() {selectJoint(index);});
-      joint_layout->addWidget(button, static_cast<int>(index / 3), static_cast<int>(index % 3));
+    joint_selector_ = new QComboBox(this);
+    for (const auto & joint : joints_) {
+      joint_selector_->addItem(QString::fromStdString(joint.name));
     }
-    main_layout->addWidget(joint_group);
+    connect(
+      joint_selector_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+      &CalibrationWindow::on_selection_changed);
 
-    selected_label_ = new QLabel;
-    loaded_offset_label_ = new QLabel;
-    proposed_offset_label_ = new QLabel("Proposed offset: calculated after motor activation");
-    position_label_ = new QLabel("Motor disabled");
-    status_label_ = new QLabel("Select a joint, then enable its motor.");
-    main_layout->addWidget(selected_label_);
-    main_layout->addWidget(loaded_offset_label_);
-    main_layout->addWidget(proposed_offset_label_);
-    main_layout->addWidget(position_label_);
+    enable_selected_btn_ = new QPushButton("Enable Selected Motor", this);
+    disable_selected_btn_ = new QPushButton("Disable Selected Motor", this);
+    enable_all_btn_ = new QPushButton("Enable All Motors", this);
+    disable_all_btn_ = new QPushButton("Disable All Motors", this);
+    minus_btn_ = new QPushButton("-1 deg", this);
+    plus_btn_ = new QPushButton("+1 deg", this);
+    save_btn_ = new QPushButton("Save Current Position as Zero", this);
+    status_label_ = new QLabel(this);
+    status_label_->setWordWrap(true);
 
-    auto * activation_layout = new QHBoxLayout;
-    enable_button_ = new QPushButton("2. Enable Selected Motor");
-    disable_button_ = new QPushButton("Disable Motor");
-    activation_layout->addWidget(enable_button_);
-    activation_layout->addWidget(disable_button_);
-    auto * all_activation_layout = new QHBoxLayout;
-    enable_all_button_ = new QPushButton("Enable All Motors");
-    disable_all_button_ = new QPushButton("Disable All Motors");
-    all_activation_layout->addWidget(enable_all_button_);
-    all_activation_layout->addWidget(disable_all_button_);
-    main_layout->addLayout(all_activation_layout);
+    connect(enable_selected_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_enable_selected);
+    connect(
+      disable_selected_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_disable_selected);
+    connect(enable_all_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_enable_all);
+    connect(disable_all_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_disable_all);
+    connect(minus_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_jog_minus);
+    connect(plus_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_jog_plus);
+    connect(save_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_save_zero);
 
-    main_layout->addLayout(activation_layout);
+    auto * layout = new QVBoxLayout(this);
+    layout->addWidget(
+      new QLabel(QString("Calibration file: %1").arg(QString::fromStdString(calibration_file_))));
+    layout->addWidget(joint_selector_);
 
-    auto * jog_group = new QGroupBox("3. Adjust Joint Zero");
-    auto * jog_layout = new QHBoxLayout(jog_group);
-    minus_button_ = new QPushButton("-1 deg");
-    plus_button_ = new QPushButton("+1 deg");
-    save_button_ = new QPushButton("4. Save Current Position as Zero");
-    jog_layout->addWidget(minus_button_);
-    jog_layout->addWidget(plus_button_);
-    jog_layout->addWidget(save_button_);
-    main_layout->addWidget(jog_group);
-    main_layout->addWidget(status_label_);
+    auto * single_group = new QGroupBox("Single motor", this);
+    auto * single_layout = new QHBoxLayout(single_group);
+    single_layout->addWidget(enable_selected_btn_);
+    single_layout->addWidget(disable_selected_btn_);
+    layout->addWidget(single_group);
 
-    connect(enable_button_, &QPushButton::clicked, this, [this]() {
-        runSafely([this]() {
-          enableMotor();
-      });
-    });
-    connect(enable_all_button_, &QPushButton::clicked, this, [this]() {
-        runSafely([this]() {
-          enableAllMotors();
-      });
-    });
-    connect(disable_all_button_, &QPushButton::clicked, this, [this]() {disableAllMotors();});
-    connect(disable_button_, &QPushButton::clicked, this, [this]() {disableMotor();});
-    connect(minus_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {jog(-1);});});
-    connect(plus_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {jog(1);});});
-    connect(save_button_, &QPushButton::clicked, this, [this]() {runSafely([this]() {save();});});
-    updateControls();
+    auto * all_group = new QGroupBox("All motors (hold all, jog selected)", this);
+    auto * all_layout = new QHBoxLayout(all_group);
+    all_layout->addWidget(enable_all_btn_);
+    all_layout->addWidget(disable_all_btn_);
+    layout->addWidget(all_group);
+
+    auto * jog_layout = new QHBoxLayout();
+    jog_layout->addWidget(minus_btn_);
+    jog_layout->addWidget(plus_btn_);
+    layout->addLayout(jog_layout);
+
+    layout->addWidget(save_btn_);
+    layout->addWidget(status_label_);
   }
 
-  void showProposedOffset(double offset)
+  quattro_hardware::JointCalibration session_calibration(const CalibratedJoint & joint) const
   {
-    proposed_offset_label_->setText(QString("Proposed offset: %1 rad (%2 deg)")
-      .arg(offset, 0, 'f', 9)
-      .arg(offset * 180.0 / kPi, 0, 'f', 3));
+    // offset is always 0 within a live session: the session's own joint_rad
+    // coordinate is "direction-corrected position relative to wherever the
+    // motor happened to be when it was enabled." The real offset is only
+    // computed (and written to the file) in on_save_zero().
+    return quattro_hardware::JointCalibration{joint.direction, 0.0, kFixedGearRatio};
   }
 
-  template<typename FunctionT>
-  void runSafely(FunctionT function)
+  bool request_fresh_motor_rev(int index, double & out_motor_rev)
   {
-    try {
-      function();
-    } catch (const std::exception & error) {
-      disableAllMotors();
-      QMessageBox::critical(this, "Calibration Error", error.what());
-      status_label_->setText(QString("Error: %1").arg(error.what()));
-    }
-  }
-
-  void selectJoint(std::size_t index)
-  {
-    if (motor_ != nullptr && !all_motors_active_ && index != selected_index_) {
-      disableMotor();
-    }
-    selected_index_ = index;
-    for (std::size_t button_index = 0; button_index < joint_buttons_.size(); ++button_index) {
-      joint_buttons_[button_index]->setChecked(button_index == selected_index_);
-    }
-    const auto config = calibration_["joints"][kJoints[index].name];
-    selected_label_->setText(QString("Selected: %1, %2, CAN ID %3, direction %4")
-      .arg(kJoints[index].label)
-      .arg(config["can_interface"].as<std::string>().c_str())
-      .arg(config["can_id"].as<int>())
-      .arg(config["direction"].as<int>()));
-    const double loaded_offset = config["offset"].as<double>();
-    loaded_offset_label_->setText(QString("Loaded offset: %1 rad (%2 deg)")
-      .arg(loaded_offset, 0, 'f', 9)
-      .arg(loaded_offset * 180.0 / kPi, 0, 'f', 3));
-    if (all_motors_active_) {
-      motor_ = all_motors_[index];
-      target_ = all_targets_[index];
-      kp_ = config["kp"].as<double>();
-      kd_ = config["kd"].as<double>();
-      direction_ = config["direction"].as<int>();
-      jog_degrees_ = 0;
-      showProposedOffset(direction_ * target_);
-      position_label_->setText(QString("Holding motor position at %1 rad; adjustment: 0 deg")
-        .arg(target_, 0, 'f', 6));
-      status_label_->setText("All motors are enabled. Adjust only the selected joint.");
-    } else {
-      proposed_offset_label_->setText("Proposed offset: calculated after motor activation");
-      status_label_->setText("The selected motor is disabled.");
-    }
-    updateControls();
-  }
-
-  void enableAllMotors()
-  {
-    if (all_motors_active_ || motor_ != nullptr) {
-      return;
-    }
-    const auto answer = QMessageBox::warning(
-      this, "Enable All Motors",
-      "Enable all 12 motors and hold their current positions?\n\n"
-      "The robot must be supported securely. Stop controller_manager and every other CAN sender "
-      "before continuing.",
-      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
-    if (answer != QMessageBox::Yes) {
-      return;
-    }
-
-    all_managers_[0] = std::make_unique<gim6010_driver::MotorManager>("can0");
-    all_managers_[1] = std::make_unique<gim6010_driver::MotorManager>("can1");
-
-    for (std::size_t index = 0; index < kJoints.size(); ++index) {
-      const auto config = calibration_["joints"][kJoints[index].name];
-      const auto can_interface = config["can_interface"].as<std::string>();
-      const auto can_id = static_cast<std::uint8_t>(config["can_id"].as<int>());
-      const std::size_t bus_index = can_interface == "can0" ? 0U : 1U;
-      all_managers_[bus_index]->addMotor(can_id);
-      all_motors_[index] = &all_managers_[bus_index]->motor(can_id);
-    }
-
-    for (std::size_t index = 0; index < kJoints.size(); ++index) {
-      const auto config = calibration_["joints"][kJoints[index].name];
-      const auto can_interface = config["can_interface"].as<std::string>();
-      const std::size_t bus_index = can_interface == "can0" ? 0U : 1U;
-      auto & motor = *all_motors_[index];
-      motor.setLimits(5.0F, 10.0F);
-      motor.configureMitControl();
-      if (!waitForFeedback(motor, *all_managers_[bus_index])) {
-        throw std::runtime_error(
-                std::string("No encoder feedback was received from ") + kJoints[index].name + ".");
-      }
-      validatePreflight(motor, kJoints[index].name);
-      all_targets_[index] = motor.encoderEstimates().output_position_rad;
-      motor.sendMitCommand(
-        {all_targets_[index], 0.0, config["kp"].as<double>(), config["kd"].as<double>(), 0.0});
-    }
-
-    for (std::size_t index = 0; index < kJoints.size(); ++index) {
-      const auto config = calibration_["joints"][kJoints[index].name];
-      const auto can_interface = config["can_interface"].as<std::string>();
-      const std::size_t bus_index = can_interface == "can0" ? 0U : 1U;
-      auto & motor = *all_motors_[index];
-      motor.enable();
-      waitForClosedLoop(motor, *all_managers_[bus_index], kJoints[index].name);
-      all_targets_[index] = refreshPosition(motor, *all_managers_[bus_index]);
-      motor.sendMitCommand(
-        {all_targets_[index], 0.0, config["kp"].as<double>(), config["kd"].as<double>(), 0.0});
-    }
-
-    all_motors_active_ = true;
-    selectJoint(selected_index_);
-    status_label_->setText("All 12 motors are enabled and holding their current positions.");
-    updateControls();
-  }
-
-  void enableMotor()
-  {
-    if (motor_ != nullptr) {
-      return;
-    }
-    const auto answer = QMessageBox::warning(
-      this, "Enable One Motor",
-      QString("Enable only the %1 motor?\n\n"
-        "The robot must be supported securely with no load on the joint.")
-      .arg(kJoints[selected_index_].label),
-      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
-    if (answer != QMessageBox::Yes) {
-      return;
-    }
-
-    const auto config = calibration_["joints"][kJoints[selected_index_].name];
-    const auto can_interface = config["can_interface"].as<std::string>();
-    const auto can_id = static_cast<std::uint8_t>(config["can_id"].as<int>());
-    kp_ = config["kp"].as<double>();
-    kd_ = config["kd"].as<double>();
-    direction_ = config["direction"].as<int>();
-
-    manager_ = std::make_unique<gim6010_driver::MotorManager>(can_interface);
-    manager_->addMotor(can_id);
-    motor_ = &manager_->motor(can_id);
-    motor_->setLimits(5.0F, 10.0F);
-    motor_->configureMitControl();
-    if (!waitForFeedback()) {
-      throw std::runtime_error("No encoder feedback was received from the selected motor.");
-    }
-    validatePreflight(*motor_, kJoints[selected_index_].name);
-
-    target_ = motor_->encoderEstimates().output_position_rad;
-    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
-    motor_->enable();
-    waitForClosedLoop(*motor_, *manager_, kJoints[selected_index_].name);
-    target_ = refreshPosition();
-    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
-    jog_degrees_ = 0;
-    showProposedOffset(direction_ * target_);
-    position_label_->setText(QString("Holding motor position at %1 rad; adjustment: 0 deg")
-      .arg(target_, 0, 'f', 6));
-    status_label_->setText("The motor is enabled and holding its initial position.");
-    updateControls();
-  }
-
-  bool waitForFeedback()
-  {
-    return waitForFeedback(*motor_, *manager_);
-  }
-
-  bool waitForFeedback(
-    gim6010_driver::Gim6010Motor & motor, gim6010_driver::MotorManager & manager)
-  {
-    const auto deadline = std::chrono::steady_clock::now() + kFeedbackTimeout;
-    auto next_feedback_request = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() < deadline) {
-      const auto now = std::chrono::steady_clock::now();
-      if (now >= next_feedback_request) {
-        motor.requestEncoderEstimates();
-        next_feedback_request = now + kFeedbackRequestInterval;
-      }
-      manager.poll(std::chrono::milliseconds{20});
-      if (motor.hasEncoderEstimates()) {
-        return true;
+    const auto & joint = joints_[static_cast<size_t>(index)];
+    motor_manager_->request_encoder_estimate(joint.can_id);
+    for (int attempt = 0; attempt < 20; ++attempt) {
+      QThread::msleep(10);
+      motor_manager_->poll();
+      if (auto * motor = motor_manager_->motor(joint.can_id)) {
+        if (const auto estimate = motor->last_encoder_estimate()) {
+          out_motor_rev = estimate->position_rev;
+          return true;
+        }
       }
     }
     return false;
   }
 
-  void validatePreflight(
-    const gim6010_driver::Gim6010Motor & motor, const std::string & name) const
+  void send_hold_command(int index)
   {
-    if (!motor.hasHeartbeat() || motor.heartbeatStale(kFeedbackTimeout)) {
-      throw std::runtime_error(name + " has no fresh heartbeat.");
+    const auto & joint = joints_[static_cast<size_t>(index)];
+    const auto calibration = session_calibration(joint);
+    gim6010_driver::MitCommand command;
+    command.position_rad =
+      quattro_hardware::joint_rad_to_mit_output_rad(target_joint_rad_[static_cast<size_t>(index)], calibration);
+    command.velocity_rad_s = 0.0;
+    command.kp = joint.kp;
+    command.kd = joint.kd;
+    command.torque_Nm = 0.0;
+    if (!motor_manager_->send_mit_command(joint.can_id, command)) {
+      status_label_->setText(
+        QString("WARNING: %1 hold command rejected (outside MIT protocol range)")
+        .arg(QString::fromStdString(joint.name)));
     }
-    const auto & heartbeat = motor.heartbeat();
-    if (heartbeat.axis_error != 0U ||
-      (heartbeat.flags & kHeartbeatFaultMask) != 0U || heartbeat.axis_state != 1U)
+  }
+
+  void set_motor_closed_loop(int index)
+  {
+    const auto & joint = joints_[static_cast<size_t>(index)];
+    motor_manager_->send_set_limits(joint.can_id, kCalibrationVelocityLimitRevS, kCalibrationCurrentLimitA);
+
+    double motor_rev = 0.0;
+    if (!request_fresh_motor_rev(index, motor_rev)) {
+      QMessageBox::warning(
+        this, "Calibration",
+        QString("No encoder feedback from '%1' -- not enabling").arg(QString::fromStdString(joint.name)));
+      return;
+    }
+    target_joint_rad_[static_cast<size_t>(index)] =
+      quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint));
+
+    // Deliberately no Clear_Errors here, same as QuattroSystem: a
+    // pre-existing fault must stay visible, not get silently wiped by
+    // enabling.
+    motor_manager_->send_set_controller_mode(
+      joint.can_id, gim6010_driver::ControlMode::kPositionControl,
+      gim6010_driver::InputMode::kMitMotionControl);
+    motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kClosedLoopControl);
+    enabled_[static_cast<size_t>(index)] = true;
+    send_hold_command(index);
+  }
+
+  void idle_motor(int index)
+  {
+    const auto & joint = joints_[static_cast<size_t>(index)];
+    motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kIdle);
+    enabled_[static_cast<size_t>(index)] = false;
+  }
+
+  void update_status_label()
+  {
+    if (selected_index_ < 0) {
+      status_label_->setText("No joint selected.");
+      return;
+    }
+    const auto & joint = joints_[static_cast<size_t>(selected_index_)];
+    const double target_deg = target_joint_rad_[static_cast<size_t>(selected_index_)] * 180.0 / kPi;
+    const char * mode_text = mode_ == Mode::kSingle ? "single" : (mode_ == Mode::kAll ? "all" : "none");
+    status_label_->setText(
+      QString("Selected: %1  |  enabled: %2  |  mode: %3  |  target: %4 deg  |  saved offset: %5 rad")
+      .arg(QString::fromStdString(joint.name))
+      .arg(enabled_[static_cast<size_t>(selected_index_)] ? "yes" : "no")
+      .arg(mode_text)
+      .arg(target_deg, 0, 'f', 3)
+      .arg(joint.offset, 0, 'f', 6));
+  }
+
+  void on_selection_changed(int index)
+  {
+    if (mode_ == Mode::kSingle && selected_index_ >= 0 &&
+      selected_index_ != index && enabled_[static_cast<size_t>(selected_index_)])
     {
-      throw std::runtime_error(name + " has a fault or is not idle; inspect errors before clear.");
+      idle_motor(selected_index_);
+      mode_ = Mode::kNone;
     }
+    selected_index_ = index;
+    update_status_label();
   }
 
-  void waitForClosedLoop(
-    gim6010_driver::Gim6010Motor & motor, gim6010_driver::MotorManager & manager,
-    const std::string & name)
+  void on_enable_selected()
   {
-    const auto deadline = std::chrono::steady_clock::now() + kFeedbackTimeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-      manager.poll(std::chrono::milliseconds{20});
-      if (motor.hasHeartbeat() && !motor.heartbeatStale(kFeedbackTimeout)) {
-        const auto & heartbeat = motor.heartbeat();
-        if (heartbeat.axis_error != 0U || (heartbeat.flags & kHeartbeatFaultMask) != 0U) {
-          throw std::runtime_error(name + " reported a fault while entering closed loop.");
+    if (selected_index_ < 0) {
+      return;
+    }
+    if (mode_ == Mode::kAll) {
+      QMessageBox::warning(this, "Calibration", "Disable All Motors first.");
+      return;
+    }
+    if (mode_ == Mode::kSingle) {
+      for (size_t i = 0; i < joints_.size(); ++i) {
+        if (enabled_[i]) {
+          idle_motor(static_cast<int>(i));
         }
-        if (heartbeat.axis_state == kClosedLoopControl) {return;}
       }
     }
-    throw std::runtime_error(name + " did not enter closed-loop control.");
+    set_motor_closed_loop(selected_index_);
+    mode_ = Mode::kSingle;
+    update_status_label();
   }
 
-  double refreshPosition()
+  void on_disable_selected()
   {
-    if (all_motors_active_) {
-      const auto config = calibration_["joints"][kJoints[selected_index_].name];
-      const std::size_t bus_index =
-        config["can_interface"].as<std::string>() == "can0" ? 0U : 1U;
-      return refreshPosition(*motor_, *all_managers_[bus_index]);
+    if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
+      return;
     }
-    return refreshPosition(*motor_, *manager_);
+    idle_motor(selected_index_);
+    if (mode_ == Mode::kSingle) {
+      mode_ = Mode::kNone;
+    }
+    update_status_label();
   }
 
-  double refreshPosition(
-    gim6010_driver::Gim6010Motor & motor, gim6010_driver::MotorManager & manager)
+  void on_enable_all()
   {
-    motor.requestEncoderEstimates();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{250};
-    while (std::chrono::steady_clock::now() < deadline) {
-      manager.poll(std::chrono::milliseconds{10});
+    if (mode_ == Mode::kSingle) {
+      QMessageBox::warning(this, "Calibration", "Disable Selected Motor first.");
+      return;
     }
-    if (!motor.hasEncoderEstimates()) {
-      throw std::runtime_error("Encoder feedback is unavailable.");
+    for (size_t i = 0; i < joints_.size(); ++i) {
+      set_motor_closed_loop(static_cast<int>(i));
     }
-    return motor.encoderEstimates().output_position_rad;
+    mode_ = Mode::kAll;
+    if (selected_index_ < 0 && !joints_.empty()) {
+      selected_index_ = 0;
+    }
+    update_status_label();
   }
 
-  void jog(int joint_degrees)
+  void on_disable_all()
   {
-    if (motor_ == nullptr) {
-      throw std::runtime_error("Enable the selected motor before adjusting it.");
-    }
-    target_ += direction_ * joint_degrees * kJogRadians;
-    motor_->sendMitCommand({target_, 0.0, kp_, kd_, 0.0});
-    if (all_motors_active_) {
-      all_targets_[selected_index_] = target_;
-    }
-    jog_degrees_ += joint_degrees;
-    showProposedOffset(direction_ * target_);
-    position_label_->setText(QString(
-        "Target motor position: %1 rad; accumulated adjustment: %2 deg")
-      .arg(target_, 0, 'f', 6).arg(jog_degrees_));
-  }
-
-  void save()
-  {
-    if (motor_ == nullptr) {
-      throw std::runtime_error("Enable the selected motor and adjust its zero before saving.");
-    }
-    const double motor_position = refreshPosition();
-    const double offset = direction_ * motor_position;
-    saveCalibration(
-      calibration_, kJoints[selected_index_].name, offset, calibration_file_);
-    loaded_offset_label_->setText(QString("Loaded offset: %1 rad (%2 deg)")
-      .arg(offset, 0, 'f', 9)
-      .arg(offset * 180.0 / kPi, 0, 'f', 3));
-    showProposedOffset(offset);
-    if (!all_motors_active_) {
-      disableMotor();
-    }
-    status_label_->setText(QString("Saved the %3 offset as %1 rad (%2 deg).")
-      .arg(offset, 0, 'f', 9)
-      .arg(offset * 180.0 / kPi, 0, 'f', 3)
-      .arg(kJoints[selected_index_].label));
-  }
-
-  void disableMotor()
-  {
-    if (manager_) {
-      manager_->disableAll();
-    }
-    motor_ = nullptr;
-    manager_.reset();
-    position_label_->setText("Motor disabled");
-    updateControls();
-  }
-
-  void disableAllMotors()
-  {
-    if (manager_) {
-      manager_->disableAll();
-    }
-    for (auto & manager : all_managers_) {
-      if (manager) {
-        manager->disableAll();
+    for (size_t i = 0; i < joints_.size(); ++i) {
+      if (enabled_[i]) {
+        idle_motor(static_cast<int>(i));
       }
-      manager.reset();
     }
-    all_motors_.fill(nullptr);
-    all_motors_active_ = false;
-    motor_ = nullptr;
-    manager_.reset();
-    position_label_->setText("All motors disabled");
-    updateControls();
+    mode_ = Mode::kNone;
+    update_status_label();
   }
 
-  void updateControls()
+  void on_jog_minus()
   {
-    const bool active = motor_ != nullptr;
-    enable_button_->setEnabled(!active && !all_motors_active_);
-    disable_button_->setEnabled(active && !all_motors_active_);
-    enable_all_button_->setEnabled(!active && !all_motors_active_);
-    disable_all_button_->setEnabled(all_motors_active_);
-    minus_button_->setEnabled(active);
-    plus_button_->setEnabled(active);
-    save_button_->setEnabled(active);
+    if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
+      return;
+    }
+    target_joint_rad_[static_cast<size_t>(selected_index_)] -= kJogStepRad;
+    send_hold_command(selected_index_);
+    update_status_label();
   }
 
-  std::filesystem::path calibration_file_;
-  YAML::Node calibration_;
-  std::array<QPushButton *, 12> joint_buttons_{};
-  QLabel * selected_label_{nullptr};
-  QLabel * loaded_offset_label_{nullptr};
-  QLabel * proposed_offset_label_{nullptr};
-  QLabel * position_label_{nullptr};
+  void on_jog_plus()
+  {
+    if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
+      return;
+    }
+    target_joint_rad_[static_cast<size_t>(selected_index_)] += kJogStepRad;
+    send_hold_command(selected_index_);
+    update_status_label();
+  }
+
+  void on_save_zero()
+  {
+    if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
+      QMessageBox::warning(this, "Calibration", "Select and enable a motor first.");
+      return;
+    }
+    auto & joint = joints_[static_cast<size_t>(selected_index_)];
+
+    double motor_rev = 0.0;
+    if (!request_fresh_motor_rev(selected_index_, motor_rev)) {
+      QMessageBox::warning(this, "Calibration", "No fresh encoder feedback -- not saving.");
+      return;
+    }
+    joint.offset = quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint));
+
+    try {
+      save_calibration(calibration_file_, joints_);
+    } catch (const std::exception & error) {
+      QMessageBox::critical(
+        this, "Calibration", QString("Failed to save calibration file: %1").arg(error.what()));
+      return;
+    }
+
+    if (mode_ == Mode::kSingle) {
+      idle_motor(selected_index_);
+      mode_ = Mode::kNone;
+    }
+    // In "all" mode the joint stays enabled holding its just-saved zero so
+    // the operator can move on to the next joint (docs/calibration.md).
+
+    update_status_label();
+    QMessageBox::information(
+      this, "Calibration",
+      QString("Saved offset for %1: %2 rad")
+      .arg(QString::fromStdString(joint.name)).arg(joint.offset, 0, 'f', 6));
+  }
+
+  void on_timer_tick()
+  {
+    motor_manager_->poll();
+    for (size_t i = 0; i < joints_.size(); ++i) {
+      if (enabled_[i]) {
+        send_hold_command(static_cast<int>(i));
+      }
+    }
+  }
+
+  enum class Mode { kNone, kSingle, kAll };
+
+  std::string calibration_file_;
+  std::vector<CalibratedJoint> joints_;
+  std::vector<std::string> buses_;
+  std::unique_ptr<gim6010_driver::MotorManager> motor_manager_;
+
+  std::vector<bool> enabled_;
+  std::vector<double> target_joint_rad_;
+  Mode mode_{Mode::kNone};
+  int selected_index_{-1};
+
+  QComboBox * joint_selector_{nullptr};
+  QPushButton * enable_selected_btn_{nullptr};
+  QPushButton * disable_selected_btn_{nullptr};
+  QPushButton * enable_all_btn_{nullptr};
+  QPushButton * disable_all_btn_{nullptr};
+  QPushButton * minus_btn_{nullptr};
+  QPushButton * plus_btn_{nullptr};
+  QPushButton * save_btn_{nullptr};
   QLabel * status_label_{nullptr};
-  QPushButton * enable_button_{nullptr};
-  QPushButton * disable_button_{nullptr};
-  QPushButton * minus_button_{nullptr};
-  QPushButton * enable_all_button_{nullptr};
-  QPushButton * disable_all_button_{nullptr};
-  QPushButton * plus_button_{nullptr};
-  QPushButton * save_button_{nullptr};
-  std::size_t selected_index_{0};
-  std::unique_ptr<gim6010_driver::MotorManager> manager_;
-  gim6010_driver::Gim6010Motor * motor_{nullptr};
-  std::array<std::unique_ptr<gim6010_driver::MotorManager>, 2> all_managers_{};
-  std::array<gim6010_driver::Gim6010Motor *, 12> all_motors_{};
-  std::array<double, 12> all_targets_{};
-  bool all_motors_active_{false};
-  double target_{0.0};
-  double kp_{20.0};
-  double kd_{0.5};
-  int direction_{1};
-  int jog_degrees_{0};
+  QTimer * timer_{nullptr};
 };
-}  // namespace
 
 int main(int argc, char ** argv)
 {
-  QApplication application(argc, argv);
-  QApplication::setApplicationName("quattro_calibration_gui");
-  if (QFontDatabase().families().contains("Noto Sans CJK KR")) {
-    QApplication::setFont(QFont("Noto Sans CJK KR", 10));
-  }
-  QCommandLineParser parser;
-  parser.setApplicationDescription("Calibrate Quattro joints one at a time.");
-  parser.addHelpOption();
-  const QCommandLineOption calibration_option(
-    {"c", "calibration-file"}, "Machine-specific calibration YAML", "path");
-  parser.addOption(calibration_option);
-  parser.process(application);
-  if (!parser.isSet(calibration_option)) {
-    parser.showHelp(1);
-  }
+  QApplication app(argc, argv);
 
-  try {
-    const std::filesystem::path calibration_file =
-      parser.value(calibration_option).toStdString();
-    if (!std::filesystem::is_regular_file(calibration_file)) {
-      throw std::invalid_argument("The calibration file does not exist.");
+  std::string calibration_file;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--calibration-file" && i + 1 < argc) {
+      calibration_file = argv[++i];
     }
-    CalibrationWindow window(calibration_file);
-    window.show();
-    return application.exec();
-  } catch (const std::exception & error) {
-    QMessageBox::critical(nullptr, "Calibration Error", error.what());
+  }
+  if (calibration_file.empty()) {
+    std::fprintf(stderr, "Usage: calibration_gui --calibration-file <path>\n");
     return 1;
   }
+
+  std::vector<CalibratedJoint> joints;
+  try {
+    joints = load_calibration(calibration_file);
+  } catch (const std::exception & error) {
+    QMessageBox::critical(
+      nullptr, "Calibration", QString("Failed to load calibration file: %1").arg(error.what()));
+    return 1;
+  }
+
+  CalibrationWindow window(calibration_file, std::move(joints));
+  window.show();
+  return app.exec();
 }

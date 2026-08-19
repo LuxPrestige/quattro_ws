@@ -1,126 +1,154 @@
 #include "gim6010_driver/can_socket.hpp"
 
-#include <algorithm>
-#include <cerrno>
-#include <cstring>
-#include <stdexcept>
-#include <string>
-
-#include <linux/can.h>
-#include <linux/can/raw.h>
+#include <fcntl.h>
 #include <net/if.h>
-#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
+#include <linux/can.h>
+#include <linux/can/raw.h>
+
+#include "gim6010_driver/can_error.hpp"
+
 namespace gim6010_driver
 {
-namespace
+
+CanSocket::CanSocket(std::string interface_name)
+: interface_name_(std::move(interface_name))
 {
-[[noreturn]] void throwErrno(const std::string & what)
-{
-  throw std::runtime_error(what + ": " + std::strerror(errno));
-}
-}  // namespace
-
-CanSocket::CanSocket(const std::string & interface_name)
-: interface_name_(interface_name)
-{
-  fd_ = ::socket(PF_CAN, SOCK_RAW, CAN_RAW);
-  if (fd_ < 0) {
-    throwErrno("failed to open a CAN_RAW socket");
-  }
-
-  struct ifreq interface_request {};
-  std::strncpy(interface_request.ifr_name, interface_name_.c_str(), IFNAMSIZ - 1);
-  if (::ioctl(fd_, SIOCGIFINDEX, &interface_request) < 0) {
-    const int saved_errno = errno;
-    ::close(fd_);
-    fd_ = -1;
-    errno = saved_errno;
-    throwErrno("unknown CAN interface " + interface_name_);
-  }
-
-  // Receive kernel error frames (bus-off, error-passive/warning, ack error,
-  // TX/RX error counters) in addition to data frames.
-  can_err_mask_t error_mask = CAN_ERR_MASK;
-  if (::setsockopt(
-      fd_, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &error_mask, sizeof(error_mask)) < 0)
-  {
-    const int saved_errno = errno;
-    ::close(fd_);
-    fd_ = -1;
-    errno = saved_errno;
-    throwErrno("failed to enable CAN error frames on " + interface_name_);
-  }
-
-  struct sockaddr_can address {};
-  address.can_family = AF_CAN;
-  address.can_ifindex = interface_request.ifr_ifindex;
-  if (::bind(fd_, reinterpret_cast<struct sockaddr *>(&address), sizeof(address)) < 0) {
-    const int saved_errno = errno;
-    ::close(fd_);
-    fd_ = -1;
-    errno = saved_errno;
-    throwErrno("failed to bind the CAN socket to " + interface_name_);
-  }
 }
 
-CanSocket::~CanSocket()
+CanSocket::~CanSocket() { close(); }
+
+CanSocket::CanSocket(CanSocket && other) noexcept
+: interface_name_(std::move(other.interface_name_)),
+  fd_(other.fd_),
+  bus_state_(other.bus_state_),
+  last_error_(other.last_error_)
 {
-  if (fd_ >= 0) {
-    ::close(fd_);
-  }
+  other.fd_ = -1;
 }
 
-void CanSocket::send(const CanFrame & frame)
+CanSocket & CanSocket::operator=(CanSocket && other) noexcept
 {
-  struct can_frame raw {};
-  raw.can_id = frame.id & CAN_SFF_MASK;
-  if (frame.remote) {
-    raw.can_id |= CAN_RTR_FLAG;
+  if (this != &other) {
+    close();
+    interface_name_ = std::move(other.interface_name_);
+    fd_ = other.fd_;
+    bus_state_ = other.bus_state_;
+    last_error_ = other.last_error_;
+    other.fd_ = -1;
   }
-  raw.can_dlc = frame.dlc;
-  if (!frame.remote) {
-    std::memcpy(raw.data, frame.data.data(), std::min<std::size_t>(frame.dlc, 8U));
-  }
-  auto written = ::write(fd_, &raw, sizeof(raw));
-  if (written != static_cast<decltype(written)>(sizeof(raw))) {
-    throwErrno("failed to write a CAN frame on " + interface_name_);
-  }
+  return *this;
 }
 
-bool CanSocket::receive(CanFrame & frame, std::chrono::milliseconds timeout)
+bool CanSocket::open()
 {
-  struct pollfd poll_fd {};
-  poll_fd.fd = fd_;
-  poll_fd.events = POLLIN;
-  const int ready = ::poll(&poll_fd, 1, static_cast<int>(timeout.count()));
-  if (ready < 0) {
-    throwErrno("poll() failed on " + interface_name_);
-  }
-  if (ready == 0 || (poll_fd.revents & POLLIN) == 0) {
+  close();
+
+  const int fd = ::socket(PF_CAN, SOCK_RAW, CAN_RAW);
+  if (fd < 0) {
     return false;
   }
 
-  struct can_frame raw {};
-  auto received = ::read(fd_, &raw, sizeof(raw));
-  if (received != static_cast<decltype(received)>(sizeof(raw))) {
-    throwErrno("failed to read a CAN frame on " + interface_name_);
+  struct ifreq interface_request{};
+  std::strncpy(interface_request.ifr_name, interface_name_.c_str(), IFNAMSIZ - 1);
+  if (::ioctl(fd, SIOCGIFINDEX, &interface_request) < 0) {
+    ::close(fd);
+    return false;
   }
 
-  frame.error = (raw.can_id & CAN_ERR_FLAG) != 0U;
-  frame.remote = !frame.error && (raw.can_id & CAN_RTR_FLAG) != 0U;
-  frame.id = frame.error ? (raw.can_id & CAN_ERR_MASK) : (raw.can_id & CAN_EFF_MASK);
-  frame.dlc = raw.can_dlc;
-  std::memcpy(frame.data.data(), raw.data, 8);
+  // Deliver error frames alongside data frames on the same fd so
+  // receive_nonblocking() can observe bus health without a second socket.
+  can_err_mask_t error_mask = CAN_ERR_MASK;
+  if (::setsockopt(fd, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &error_mask, sizeof(error_mask)) < 0) {
+    ::close(fd);
+    return false;
+  }
+
+  struct sockaddr_can address{};
+  address.can_family = AF_CAN;
+  address.can_ifindex = interface_request.ifr_ifindex;
+  if (::bind(fd, reinterpret_cast<struct sockaddr *>(&address), sizeof(address)) < 0) {
+    ::close(fd);
+    return false;
+  }
+
+  const int flags = ::fcntl(fd, F_GETFL, 0);
+  if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    ::close(fd);
+    return false;
+  }
+
+  fd_ = fd;
+  bus_state_ = CanBusState::kActive;
+  last_error_.reset();
   return true;
 }
 
-const std::string & CanSocket::interfaceName() const noexcept
+void CanSocket::close()
 {
-  return interface_name_;
+  if (fd_ >= 0) {
+    ::close(fd_);
+    fd_ = -1;
+  }
+}
+
+bool CanSocket::send(const CanFrame & frame)
+{
+  if (fd_ < 0) {
+    return false;
+  }
+
+  struct can_frame raw{};
+  raw.can_id = frame.id & CAN_SFF_MASK;
+  if (frame.rtr) {
+    raw.can_id |= CAN_RTR_FLAG;
+  }
+  raw.can_dlc = frame.dlc;
+  std::memcpy(raw.data, frame.data.data(), frame.data.size());
+
+  const ssize_t written = ::write(fd_, &raw, sizeof(raw));
+  return written == static_cast<ssize_t>(sizeof(raw));
+}
+
+std::optional<CanFrame> CanSocket::receive_nonblocking()
+{
+  if (fd_ < 0) {
+    return std::nullopt;
+  }
+
+  while (true) {
+    struct can_frame raw{};
+    const ssize_t bytes_read = ::read(fd_, &raw, sizeof(raw));
+    if (bytes_read != static_cast<ssize_t>(sizeof(raw))) {
+      return std::nullopt;
+    }
+
+    if (raw.can_id & CAN_ERR_FLAG) {
+      const CanBusError error = decode_error_frame(raw);
+      bus_state_ = bus_state_from_error(error);
+      last_error_ = error;
+      continue;
+    }
+
+    CanFrame frame;
+    frame.id = raw.can_id & CAN_SFF_MASK;
+    frame.rtr = (raw.can_id & CAN_RTR_FLAG) != 0;
+    frame.dlc = raw.can_dlc;
+    std::memcpy(frame.data.data(), raw.data, frame.data.size());
+    return frame;
+  }
+}
+
+std::optional<CanBusError> CanSocket::poll_error_frame()
+{
+  std::optional<CanBusError> result = last_error_;
+  last_error_.reset();
+  return result;
 }
 
 }  // namespace gim6010_driver

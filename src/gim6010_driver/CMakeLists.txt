@@ -7,53 +7,53 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 
-add_library(${PROJECT_NAME} SHARED
+add_library(gim6010_driver SHARED
   src/can_socket.cpp
   src/can_error.cpp
-  src/can_diagnostics.cpp
-  src/gds68_protocol.cpp
+  src/can_simple_messages.cpp
   src/mit_protocol.cpp
   src/gim6010_motor.cpp
-  src/motor_manager.cpp
-)
-target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
-target_include_directories(${PROJECT_NAME} PUBLIC
+  src/motor_manager.cpp)
+target_compile_features(gim6010_driver PUBLIC cxx_std_17)
+target_include_directories(gim6010_driver PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
 add_executable(gim6010_diagnostic src/gim6010_diagnostic.cpp)
 target_compile_features(gim6010_diagnostic PUBLIC cxx_std_17)
-target_link_libraries(gim6010_diagnostic ${PROJECT_NAME})
+target_link_libraries(gim6010_diagnostic gim6010_driver)
 
-install(DIRECTORY include/ DESTINATION include)
-install(TARGETS ${PROJECT_NAME} EXPORT export_${PROJECT_NAME}
+install(
+  TARGETS gim6010_driver
+  EXPORT export_gim6010_driver
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
 install(TARGETS gim6010_diagnostic DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
-  find_package(ament_cmake_gtest REQUIRED)
-
-  ament_add_gtest(test_gds68_protocol test/test_gds68_protocol.cpp)
-  target_link_libraries(test_gds68_protocol ${PROJECT_NAME})
-
-  ament_add_gtest(test_mit_protocol test/test_mit_protocol.cpp)
-  target_link_libraries(test_mit_protocol ${PROJECT_NAME})
-
-  ament_add_gtest(test_can_diagnostics test/test_can_diagnostics.cpp)
-  target_link_libraries(test_can_diagnostics ${PROJECT_NAME})
-
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_can_simple_messages test/test_can_simple_messages.cpp)
+  target_link_libraries(test_can_simple_messages gim6010_driver)
+
+  ament_add_gtest(test_mit_protocol test/test_mit_protocol.cpp)
+  target_link_libraries(test_mit_protocol gim6010_driver)
+
+  ament_add_gtest(test_can_error test/test_can_error.cpp)
+  target_link_libraries(test_can_error gim6010_driver)
+
+  ament_add_gtest(test_motor_manager test/test_motor_manager.cpp)
+  target_link_libraries(test_motor_manager gim6010_driver)
 endif()
 
-ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_include_directories(include)
+ament_export_libraries(gim6010_driver)
+ament_export_targets(export_gim6010_driver)
 ament_package()

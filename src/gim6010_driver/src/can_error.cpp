@@ -1,40 +1,38 @@
 #include "gim6010_driver/can_error.hpp"
 
+#include <linux/can/error.h>
+
 namespace gim6010_driver
 {
-namespace
-{
-// linux/can/error.h class flags, carried in the (masked) arbitration id of
-// a kernel error frame.
-constexpr std::uint32_t kErrCrtl = 0x00000004U;
-constexpr std::uint32_t kErrAck = 0x00000020U;
-constexpr std::uint32_t kErrBusoff = 0x00000040U;
-constexpr std::uint32_t kErrCnt = 0x00000200U;
 
-// linux/can/error.h CAN_ERR_CRTL_* bits, carried in data[1] when kErrCrtl
-// is set.
-constexpr std::uint8_t kCrtlRxWarning = 0x04U;
-constexpr std::uint8_t kCrtlTxWarning = 0x08U;
-constexpr std::uint8_t kCrtlRxPassive = 0x10U;
-constexpr std::uint8_t kCrtlTxPassive = 0x20U;
-}  // namespace
-
-DecodedCanError decodeErrorFrame(const CanFrame & frame)
+CanBusError decode_error_frame(const struct can_frame & raw)
 {
-  DecodedCanError result;
-  result.bus_off = (frame.id & kErrBusoff) != 0U;
-  result.ack_error = (frame.id & kErrAck) != 0U;
-  if ((frame.id & kErrCrtl) != 0U && frame.dlc > 1U) {
-    const std::uint8_t crtl = frame.data[1];
-    result.error_warning = (crtl & (kCrtlRxWarning | kCrtlTxWarning)) != 0U;
-    result.error_passive = (crtl & (kCrtlRxPassive | kCrtlTxPassive)) != 0U;
+  CanBusError error;
+
+  if (raw.can_id & CAN_ERR_CRTL) {
+    const uint8_t control = raw.data[1];
+    error.error_warning = (control & (CAN_ERR_CRTL_TX_WARNING | CAN_ERR_CRTL_RX_WARNING)) != 0;
+    error.error_passive = (control & (CAN_ERR_CRTL_TX_PASSIVE | CAN_ERR_CRTL_RX_PASSIVE)) != 0;
   }
-  if ((frame.id & kErrCnt) != 0U && frame.dlc > 7U) {
-    result.has_counters = true;
-    result.tx_error_counter = frame.data[6];
-    result.rx_error_counter = frame.data[7];
+  error.bus_off = (raw.can_id & CAN_ERR_BUSOFF) != 0;
+  error.tx_error_counter = raw.data[6];
+  error.rx_error_counter = raw.data[7];
+
+  return error;
+}
+
+CanBusState bus_state_from_error(const CanBusError & error) noexcept
+{
+  if (error.bus_off) {
+    return CanBusState::kBusOff;
   }
-  return result;
+  if (error.error_passive) {
+    return CanBusState::kPassive;
+  }
+  if (error.error_warning) {
+    return CanBusState::kWarning;
+  }
+  return CanBusState::kActive;
 }
 
 }  // namespace gim6010_driver

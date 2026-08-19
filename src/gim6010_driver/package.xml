@@ -4,18 +4,21 @@
   <name>gim6010_driver</name>
   <version>0.1.0</version>
   <description>
-    Low-level SocketCAN/CAN Simple driver for the SteadyWin GIM6010-8 + GDS68,
-    supporting Direct Position/Velocity/Torque and MIT control. No ROS or
-    Quattro joint/URDF dependency.
+    ROS-independent SocketCAN driver for SteadyWin GIM6010-8/GDS68 motors:
+    CAN Simple (axis state, Direct Position/Velocity/Torque, limits,
+    gains, telemetry, error handling) and MIT motion control encode/decode,
+    plus multi-bus/multi-motor routing. Depends on nothing beyond a Linux
+    SocketCAN-capable kernel and the C++ standard library, so it is reusable
+    outside the Quattro workspace by any project driving this motor family.
   </description>
   <maintainer email="ros@todo.todo">ros</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -2,20 +2,33 @@
 #define QUATTRO_HARDWARE__QUATTRO_SYSTEM_HPP_
 
 #include <chrono>
-#include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "gim6010_driver/motor_manager.hpp"
 #include "hardware_interface/system_interface.hpp"
+#include "quattro_hardware/joint_transform.hpp"
+#include "rclcpp/duration.hpp"
+#include "rclcpp/time.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
 namespace quattro_hardware
 {
 
+enum class ControlMethod
+{
+  kDirectPosition,
+  kDirectVelocity,
+  kDirectTorque,
+  kMit,
+};
+
+// hardware_interface::SystemInterface connecting the 12 Quattro joints to
+// real GIM6010-8/GDS68 motors over gim6010_driver. Command/state interface
+// names, per-joint parameters, and hardware parameters are the contract
+// already fixed by quattro_description/urdf/quattro.urdf.xacro -- see
+// docs/packages/quattro_hardware.md for the full design rationale.
 class QuattroSystem : public hardware_interface::SystemInterface
 {
 public:
@@ -23,91 +36,79 @@ public:
     const hardware_interface::HardwareComponentInterfaceParams & params) override;
   hardware_interface::CallbackReturn on_configure(
     const rclcpp_lifecycle::State & previous_state) override;
+  hardware_interface::CallbackReturn on_cleanup(
+    const rclcpp_lifecycle::State & previous_state) override;
   hardware_interface::CallbackReturn on_activate(
     const rclcpp_lifecycle::State & previous_state) override;
   hardware_interface::CallbackReturn on_deactivate(
-    const rclcpp_lifecycle::State & previous_state) override;
-  hardware_interface::CallbackReturn on_shutdown(
     const rclcpp_lifecycle::State & previous_state) override;
   hardware_interface::return_type read(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
   hardware_interface::return_type write(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
-  hardware_interface::return_type prepare_command_mode_switch(
-    const std::vector<std::string> & start_interfaces,
-    const std::vector<std::string> & stop_interfaces) override;
 
 private:
-  enum class ControlMethod {kDirectPosition, kDirectVelocity, kDirectTorque, kMit};
-  enum class FaultReason
-  {
-    kNone, kFeedbackTimeout, kHeartbeatTimeout, kCommandTimeout, kCanPassive,
-    kCanBusOff, kMotorFault, kInvalidCommand, kCanIo
-  };
-
-  struct Joint
+  struct JointContext
   {
     std::string name;
-    std::string can_interface;
-    std::uint8_t node_id{0};
-    double direction{1.0};
-    double offset{0.0};
-    double gear_ratio{8.0};
-    double lower{-12.5};
-    double upper{12.5};
-    double velocity_limit{4.0};
-    double effort_limit{40.0};
+    JointCalibration calibration;
+    uint8_t node_id{0};
+    std::string can_bus;
     double current_limit{5.0};
-    double mit_kp{20.0};
-    double mit_kd{0.5};
-    std::uint64_t reported_missed_heartbeats{0};
-    gim6010_driver::MotorManager * manager{nullptr};
+    double mit_kp{0.0};
+    double mit_kd{0.0};
   };
 
-  bool configureMotors();
-  void configureMotorControllers();
-  bool waitForInitialFeedback();
-  bool waitForPreflightHeartbeats();
-  bool waitForOperationalHeartbeats();
-  void sendActivationHold(Joint & joint, double output_position);
-  bool waitForMotorOperational(
-    std::size_t motor_index, const std::vector<double> & hold_positions);
-  bool waitForActivationInterval(
-    std::size_t motor_index, const std::vector<double> & hold_positions);
-  void pollManagers();
-  void requestMotorFeedback(std::size_t motor_count);
-  void requestMotorTelemetry();
-  void captureFaultDiagnostics();
-  void publishDiagnostics(bool force = false);
-  void safeStop() noexcept;
-  std::string interfaceKey(const Joint & joint, const char * interface_name) const;
-  const char * commandInterfaceName() const noexcept;
+  bool parse_hardware_parameters();
+  bool parse_joints();
+  bool validate_interfaces() const;
 
-  std::vector<Joint> joints_;
-  std::unordered_map<std::string, std::unique_ptr<gim6010_driver::MotorManager>> managers_;
-  std::chrono::milliseconds feedback_timeout_{200};
+  // Blocks (with bounded sleeps) until every motor has answered with fresh
+  // position feedback and no pre-existing fault, or startup_timeout_
+  // elapses. Called once at the top of on_activate.
+  bool wait_for_fresh_feedback_and_no_faults();
+  // Brings a single motor into closed-loop control, holding at its current
+  // measured position (MIT: with a Kp/Kd ramp over engagement_duration_).
+  // Blocks for up to ~engagement_duration_ + motor_activation_interval_.
+  bool activate_joint(const JointContext & joint);
+  // Idles every configured motor. Safe to call even if some were never
+  // activated.
+  void safe_stop_all();
+
+  ControlMethod control_method_{ControlMethod::kMit};
+  bool apply_position_gains_{false};
+  double position_gain_{0.0};
+  double velocity_gain_{0.0};
+  double velocity_integrator_gain_{0.0};
+  std::chrono::milliseconds feedback_timeout_{150};
   std::chrono::milliseconds feedback_request_period_{50};
-  std::chrono::milliseconds heartbeat_timeout_{1000};
+  std::chrono::milliseconds heartbeat_timeout_{400};
   std::chrono::milliseconds startup_timeout_{1000};
-  std::chrono::milliseconds motor_activation_interval_{500};
+  std::chrono::milliseconds motor_activation_interval_{100};
   std::chrono::milliseconds command_timeout_{250};
   std::chrono::milliseconds scheduling_warning_{50};
-  std::chrono::steady_clock::time_point last_write_{};
-  double motor_velocity_limit_{5.0};
-  double motor_current_limit_{5.0};
-  bool apply_position_gains_{false};
-  gim6010_driver::PositionControlGains position_gains_{};
+  double rotor_velocity_limit_rev_s_{5.0};
+  double motor_current_limit_a_{5.0};
   std::chrono::milliseconds engagement_duration_{1000};
   std::chrono::milliseconds telemetry_period_{500};
-  std::chrono::steady_clock::time_point next_telemetry_request_{};
-  std::size_t next_telemetry_motor_{0};
-  std::chrono::steady_clock::time_point next_feedback_request_{};
-  std::chrono::steady_clock::time_point next_diagnostics_publish_{};
-  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_publisher_;
+
+  std::vector<JointContext> joints_;
+  std::vector<std::string> buses_;
+  std::unique_ptr<gim6010_driver::MotorManager> motor_manager_;
+
+  std::chrono::steady_clock::time_point last_feedback_request_time_{};
+  // Updated at the top of write() while active; read() checks this to
+  // detect "write() has stopped being called" (see quattro_system.cpp for
+  // why command staleness can't be detected by comparing command values).
+  std::chrono::steady_clock::time_point last_write_time_{};
+  // Interval between consecutive read() calls, used only to log a
+  // scheduling-jitter warning (never triggers safe_stop_all() by itself --
+  // that is what feedback_timeout_/heartbeat_timeout_ are for).
+  std::chrono::steady_clock::time_point last_read_time_{};
+  bool has_prior_read_time_{false};
   bool active_{false};
-  ControlMethod control_method_{ControlMethod::kMit};
-  FaultReason fault_reason_{FaultReason::kNone};
 };
 
 }  // namespace quattro_hardware
+
 #endif  // QUATTRO_HARDWARE__QUATTRO_SYSTEM_HPP_

@@ -12,7 +12,7 @@
 - 기본 실행 환경: Docker, 컨테이너 내부 `/ws`
 - SBC: Raspberry Pi 5
 - 액추에이터: SteadyWin GIM6010-8 × 12
-- 드라이버: GDS68 (온보드 인코더는 MA732 14-bit single-turn absolute 1개뿐 — secondary encoder 없음, `docs/gim6010_hardware.md` 11절)
+- 드라이버: GDS68
 - 모터 통신: Linux SocketCAN / CAN Simple / Direct Position·Velocity·Torque / MIT Control
 - 기본 CAN bitrate: `500000`
 - IMU: BNO085
@@ -41,10 +41,13 @@
 | `quattro_description` | URDF/Xacro, mesh, TF, inertial/collision, `ros2_control` description | 제어 알고리즘, 드라이버 구현 |
 | `quattro_bringup` | launch, controller 구성, 실제 시스템 실행 조합 | 드라이버·알고리즘 구현 |
 | `quattro_gazebo` | Gazebo world, simulation launch, simulation controller | 실제 하드웨어 제어 |
-| `quattro_hardware` | `SystemInterface`, joint↔motor 변환, lifecycle, 안전 정책 | raw MIT/CAN 패킷 생성, gait |
-| `gim6010_driver` | SocketCAN, CAN Simple, MIT encode/decode, GIM6010 abstraction | Quattro joint 이름, URDF, IK/FK |
+| `quattro_controllers` | MIT 5-interface(`position/velocity/kp/kd/effort`)를 모두 claim하는 `ros2_control` 컨트롤러(`MitTrajectoryController`) | raw CAN, GDS68 패킷, joint 좌표 변환 |
+| `quattro_hardware` | `hardware_interface::SystemInterface` 구현(`QuattroSystem`), joint direction/offset/limit 변환, 활성화 안전 절차 | raw CAN payload 직접 생성, gait/IK |
+| `gim6010_driver` | SocketCAN 송수신, CAN Simple/MIT encode·decode, GIM6010 모터 상태 추상화 | Quattro joint 이름, URDF, ROS 의존 |
 | `quattro_sensors` | BNO085 등 센서 취득과 표준 ROS 메시지 발행 | balance 제어 |
 | `quattro_teleop` | joystick/keyboard 입력과 상위 명령 생성 | 모터 직접 제어 |
+
+`gim6010_driver`는 구현됨(`docs/packages/gim6010_driver.md`). `quattro_hardware`는 현재 재작성 중이며 **코드가 없다**(`src/quattro_hardware/`가 빈 디렉터리). 설계 명세는 `docs/packages/quattro_hardware.md`를 따른다.
 
 의존 방향은 다음을 유지한다.
 
@@ -60,7 +63,7 @@ quattro
 `gim6010_driver`가 `quattro_hardware` 또는 `quattro`에 의존해서는 안 된다.
 
 
-CAN ID 기준은 `0~5 -> can0`, `6~11 -> can1`이다. 상세 매핑은 `docs/gim6010_hardware.md`를 따른다.
+CAN ID 기준은 `0~5 -> can0`, `6~11 -> can1`이다. 상세 매핑은 `docs/packages/quattro_hardware.md`(0절)를 따른다.
 
 ## 코딩 규칙
 
@@ -110,12 +113,14 @@ colcon build --symlink-install --event-handlers console_direct+
 |---|---|
 | 문서 전체 색인 | `docs/README.md` |
 | 패키지 구조, ROS 인터페이스, 좌표계·이름 규칙 | `docs/architecture.md` |
+| 패키지별 세부 구현(모든 9개 패키지, `gim6010_driver`/`quattro_hardware`는 설계 명세) | `docs/packages/*.md` |
 | Docker, X11, GPU, 빌드, Git 개발 환경 | `docs/development_environment.md` |
 | Gazebo 시뮬레이션 | `docs/gazebo.md` |
-| GIM6010-8 / GDS68 / CAN / ros2_control 하드웨어 구조 | `docs/gim6010_hardware.md` |
+| GIM6010-8 / GDS68 / CAN / ros2_control 하드웨어 구조 | `docs/packages/gim6010_driver.md`(구현됨), `docs/packages/quattro_hardware.md`(설계 명세, 구현 없음) |
 | 관절 영점 캘리브레이션 | `docs/calibration.md` |
-| 실제 로봇 실행 | `docs/hardware_bringup.md` |
+| 실제 로봇 실행 | `docs/packages/quattro_bringup.md` |
 | 구현 상태와 다음 작업 | `docs/development_status.md` |
 | 제조사 번역 매뉴얼 | `docs/GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` |
+| gim6010_driver/quattro_hardware 재설계 시 참고한 레퍼런스 프로젝트 | `docs/ros_odrive/`, `docs/Steadywin-RS485-CAN-Connector/` (의존성 아님, 아키텍처 참고용) |
 
 문서 내용과 코드가 충돌하면 **현재 코드와 실제 하드웨어 사양을 확인한 뒤 문서도 함께 수정**한다.

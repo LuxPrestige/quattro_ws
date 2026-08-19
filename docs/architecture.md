@@ -11,12 +11,15 @@ src/
 ├── quattro/
 ├── quattro_description/
 ├── quattro_bringup/
+├── quattro_controllers/
 ├── quattro_gazebo/
-├── quattro_hardware/
+├── quattro_hardware/    # 현재 코드 없음 (재작성 중, docs/packages/quattro_hardware.md 참고)
 ├── quattro_sensors/
 ├── quattro_teleop/
-└── gim6010_driver/
+└── gim6010_driver/       # 구현됨, docs/packages/gim6010_driver.md 참고
 ```
+
+각 패키지의 세부 구현(파일 구조, ROS 토픽/서비스/파라미터)은 `docs/packages/<패키지명>.md`에 정리한다. 이 문서는 패키지 책임과 의존 방향, 저장소 전역 규칙만 다룬다.
 
 ### `quattro`
 
@@ -70,37 +73,25 @@ Gazebo Harmonic 시뮬레이션.
 
 실제 하드웨어 제어를 포함하지 않는다.
 
+### `quattro_controllers`
+
+Quattro 전용 `ros2_control` 컨트롤러 플러그인(C++). MIT command mode가 요구하는 `position/velocity/kp/kd/effort` 5개 command interface를 관절마다 동시에 claim하는 `MitTrajectoryController`를 제공한다. 표준 `joint_trajectory_controller`는 관절당 `position` 하나만 다루므로 MIT 모드에 쓸 수 없어 이 패키지가 별도로 필요하다.
+
+raw CAN, GDS68 패킷, joint 좌표 변환(direction/offset)은 이 패키지에서 다루지 않는다.
+
 ### `gim6010_driver`
 
-GIM6010-8 + GDS68 전용 저수준 C++ 드라이버.
+GIM6010-8 + GDS68 전용 저수준 C++ 드라이버. **구현됨.**
 
-```text
-Gim6010Motor / MotorManager
-        ↓
-CAN Simple direct/MIT command routing
-        ↓
-Direct Position/Velocity/Torque 및 MIT encode/decode
-        ↓
-SocketCAN
-```
-
-Quattro joint 이름, IK/FK, URDF를 알지 않는다.
+SocketCAN 송수신, CAN Simple/MIT command encode·decode, GIM6010 모터 상태 추상화, 한 CAN bus 내 다중 모터 라우팅을 책임진다. Quattro joint 이름이나 URDF를 알지 못한다 — `MotorManager`는 bus 목록과 node_id 라우팅을 생성자 인자로 받으므로 다른 프로젝트에서도 재사용 가능하다. 상세는 `docs/packages/gim6010_driver.md`.
 
 ### `quattro_hardware`
 
-Quattro joint와 실제 GIM6010-8을 연결하는 `ros2_control` 계층.
+Quattro joint와 실제 GIM6010-8을 연결하는 `ros2_control` 계층(`hardware_interface::SystemInterface` 구현, 클래스명 `QuattroSystem`). **현재 코드가 없다** (재작성 중).
 
-```text
-ros2_control
-    ↓
-QuattroSystem
-    ↓
-joint direction / offset / safety
-    ↓
-gim6010_driver
-```
+`gim6010_driver`를 라이브러리로 직접 링크해 사용하며(별도 프로세스/토픽 경유 아님), joint별 direction/offset/limit 변환과 모터 활성화 시 안전 절차를 담당한다. 설계 명세는 `docs/packages/quattro_hardware.md`.
 
-raw CAN 프레임과 MIT bit packing은 이 패키지에서 구현하지 않는다.
+raw CAN 프레임과 MIT bit packing은 이 패키지에서 구현하지 않는다(`gim6010_driver`의 책임).
 
 ### `quattro_sensors`
 
@@ -158,13 +149,6 @@ GDS68 / GIM6010-8
 | 하드웨어 진단 | `diagnostic_msgs/msg/DiagnosticArray` |
 | TF | `tf2_ros` / `geometry_msgs/msg/TransformStamped` |
 
-MIT 전용 Kp/Kd/feed-forward torque 값을 `JointState` 필드에 억지로 넣지 않는다.
-
-실기 기본 경로는 표준 `position` command interface와 GDS68 Direct Position이다.
-MIT를 선택하면 `quattro_controllers::MitTrajectoryController`가 `position`,
-`velocity`, `kp`, `kd`, `effort` command interface를 모두 claim하고 gait의
-`JointTrajectory`를 MIT 명령으로 시간 보간한다. 두 방식은 bringup의 control method와
-controller config를 함께 선택하며 일반 position controller 뒤에 MIT를 숨기지 않는다.
 
 ## 5. 단위 규칙
 
