@@ -46,8 +46,10 @@
 | `gim6010_driver` | SocketCAN 송수신, CAN Simple/MIT encode·decode, GIM6010 모터 상태 추상화 | Quattro joint 이름, URDF, ROS 의존 |
 | `quattro_sensors` | BNO085 등 센서 취득과 표준 ROS 메시지 발행 | balance 제어 |
 | `quattro_teleop` | joystick/keyboard 입력과 상위 명령 생성 | 모터 직접 제어 |
+| `quattro_core` | ROS 비의존 C++ 사족보행 제어 core(kinematics/Jacobian/trajectory/leg controller/state estimation core/balance/FSM/gain profile) | raw CAN, ROS 노드/메시지 |
+| `quattro_core_ros` | `quattro_core`를 ROS에 연결하는 노드(`gain_scheduler_node`: swing/stance gain을 `MitTrajectoryController`에 전달) | raw CAN, gim6010_driver/quattro_hardware 의존 |
 
-`gim6010_driver`는 구현됨(`docs/packages/gim6010_driver.md`). `quattro_hardware`는 현재 재작성 중이며 **코드가 없다**(`src/quattro_hardware/`가 빈 디렉터리). 설계 명세는 `docs/packages/quattro_hardware.md`를 따른다.
+`gim6010_driver`, `quattro_hardware` 모두 구현됨(`docs/packages/gim6010_driver.md`, `docs/packages/quattro_hardware.md`). `quattro_hardware`는 `gim6010_driver`를 라이브러리로 직접 링크하는 `QuattroSystem`(`hardware_interface::SystemInterface`)과 `calibration_gui`로 구성된다.
 
 의존 방향은 다음을 유지한다.
 
@@ -113,14 +115,16 @@ colcon build --symlink-install --event-handlers console_direct+
 |---|---|
 | 문서 전체 색인 | `docs/README.md` |
 | 패키지 구조, ROS 인터페이스, 좌표계·이름 규칙 | `docs/architecture.md` |
-| 패키지별 세부 구현(모든 9개 패키지, `gim6010_driver`/`quattro_hardware`는 설계 명세) | `docs/packages/*.md` |
+| 패키지별 세부 구현(11개 패키지 모두 구현됨) | `docs/packages/*.md` |
 | Docker, X11, GPU, 빌드, Git 개발 환경 | `docs/development_environment.md` |
 | Gazebo 시뮬레이션 | `docs/gazebo.md` |
-| GIM6010-8 / GDS68 / CAN / ros2_control 하드웨어 구조 | `docs/packages/gim6010_driver.md`(구현됨), `docs/packages/quattro_hardware.md`(설계 명세, 구현 없음) |
+| GIM6010-8 / GDS68 / CAN / ros2_control 하드웨어 구조 | `docs/packages/gim6010_driver.md`, `docs/packages/quattro_hardware.md`(모두 구현됨, 실기 미검증) |
 | 관절 영점 캘리브레이션 | `docs/calibration.md` |
 | 실제 로봇 실행 | `docs/packages/quattro_bringup.md` |
 | 구현 상태와 다음 작업 | `docs/development_status.md` |
 | 제조사 번역 매뉴얼 | `docs/GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` |
 | gim6010_driver/quattro_hardware 재설계 시 참고한 레퍼런스 프로젝트 | `docs/ros_odrive/`, `docs/Steadywin-RS485-CAN-Connector/` (의존성 아님, 아키텍처 참고용) |
+| Cheetah-Software 대비 설계 근거(quattro/quattro_core) | `docs/references/cheetah_software.md` |
+| Kp/Kd gain 구조, tuning 절차 | `docs/control/gain_tuning.md` |
 
 문서 내용과 코드가 충돌하면 **현재 코드와 실제 하드웨어 사양을 확인한 뒤 문서도 함께 수정**한다.

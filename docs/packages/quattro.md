@@ -18,7 +18,12 @@ src/quattro/quattro/
 
 - `RobotGeometry`: 로봇 치수 dataclass (hip_offset_y, upper/lower_leg_length, hip/foot spacing, nominal_height, center_of_mass_offset_x). 모든 길이는 양수여야 한다(`__post_init__` 검증).
 - `LegKinematics`: 힙 프레임 기준 3관절(hip/upper/lower) analytic inverse/forward. 도달 불가능한 목표는 `UnreachableTargetError`를 던진다.
+  - `jacobian(joints)`: analytic 3x3 hip-frame Jacobian(`forward`의 닫힌형 미분, 수치미분 아님).
+  - `foot_velocity(joints, joint_velocities)`: `v = J(q) qdot`.
+  - `joint_velocity_from_foot_velocity(joints, foot_velocity, damping=1e-3)`: `qdot = J^T (J J^T + damping^2 I)^-1 v` (damped least-squares pseudoinverse) — Jacobian singularity 근처에서도 발산하지 않는다.
+  - `force_to_joint_torque(joints, force)`: `tau = J(q)^T F`.
 - `QuadrupedKinematics`: 4다리 IK/FK를 몸체 rpy + translation + world-frame foot position(또는 nominal stance)으로 계산. `joint_names`가 12관절 표준 순서(`docs/architecture.md` 8절)를 반환한다.
+  - `joint_velocities(rpy, joint_angles, foot_velocities, damping=1e-3)`: world/body-frame foot velocity(`inverse`의 `foot_positions`와 같은 프레임)를 몸체 회전만 이용해 각 힙 프레임으로 옮긴 뒤, 다리별 damped pseudoinverse로 4x3 joint velocity를 반환한다.
 - `rotation_matrix_from_rpy`: 고정축 roll-pitch-yaw 회전행렬.
 
 ## `gait.py`
@@ -26,7 +31,8 @@ src/quattro/quattro/
 레퍼런스 사족보행 코드의 12-control-point Bézier swing 곡선과 sine stance 곡선, diagonal trot phasing(0.5 위상차 대각선 쌍), yaw-circle 회전 이동, touchdown 기반 위상 재동기화를 그대로 구현한다.
 
 - `GaitParameters`: swing/stance duration, clearance/penetration height, 최대 선속도·yaw rate, 정지 복귀 속도. `stance_duration <= 1.3 * swing_duration` 등 물리적으로 불가능한 조합은 생성 시점에 거부한다.
-- `GaitGenerator.update(dt, linear_velocity, yaw_rate, contacts, complete_cycle_on_stop)`: 매 제어 주기 목표 foot position(nominal 좌표계)을 반환한다. 정지 명령이 들어오면 현재 진행 중인 stride를 끝까지 마치거나(`complete_cycle_on_stop=True`) 즉시 nominal 위치로 복귀한다.
+- `GaitGenerator.update(dt, linear_velocity, yaw_rate, contacts, complete_cycle_on_stop)`: 매 제어 주기 목표 foot position(nominal 좌표계)을 반환한다(`update_states`의 얇은 wrapper, position만 추출). 정지 명령이 들어오면 현재 진행 중인 stride를 끝까지 마치거나(`complete_cycle_on_stop=True`) 즉시 nominal 위치로 복귀한다.
+- `GaitGenerator.update_states(...)`: `update`와 같은 인자·gait clock 동작이지만, 다리마다 `FootTrajectoryState(position, velocity, acceleration, phase, in_swing)`를 반환한다. velocity/acceleration은 Bézier/sine 곡선의 **analytic** phase-derivative(Bernstein 다항식 미분 항등식)를 segment duration(swing/stance)으로 스케일링해 얻는다 — finite difference를 쓰지 않는다.
 - 앞왼쪽 다리(`front_left`)의 swing phase가 0.9 이상이고 contact가 감지되면 위상을 재동기화한다(다리별 개별 접촉 센서가 없는 현재 구성에서는 `contacts/<leg>` 토픽 기본값 `False`로 동작).
 
 ## `gait_controller` 노드
@@ -46,7 +52,9 @@ src/quattro/quattro/
 | `gait/clearance_height`, `gait/penetration_depth`, `gait/swing_duration` | `std_msgs/Float64` | 실행 중 gait 파라미터 조정(검증 실패 시 로그만 남기고 무시) |
 | `contacts/<leg>` (4개) | `std_msgs/Bool` | 다리별 접지 상태(현재 실제 센서 미연결, 기본 `False`) |
 
-**발행**: `<trajectory_controller_name>/joint_trajectory` (기본 `joint_trajectory_controller/joint_trajectory`, `hardware_control_method=mit`이면 launch에서 `mit_trajectory_controller/joint_trajectory`로 재지정).
+**발행**: `<trajectory_controller_name>/joint_trajectory` (기본 `joint_trajectory_controller/joint_trajectory`, `hardware_control_method=mit`이면 launch에서 `mit_trajectory_controller/joint_trajectory`로 재지정). 정상 gait 주기(초기 자세 전환이 아닌) 포인트는 `positions`와 함께 `velocities`도 채운다 — `q_des = IK(p_des)`, `qd_des = QuadrupedKinematics.joint_velocities(rpy, q_des, v_des)`(`v_des`는 `GaitGenerator.update_states`의 analytic foot velocity). 초기 자세(staged 포함) 전환 포인트는 이전과 동일하게 `positions`만 채운다(foot velocity 목표가 없는 순수 자세 이동이므로).
+
+**추가 발행**: `swing/<leg>` (4개, `std_msgs/Bool`) — 매 제어 주기 `GaitGenerator.update_states()`가 계산한 각 다리의 `in_swing`을 그대로 발행한다. `gait_enabled` 여부와 무관하게 항상 발행된다(정지 상태에서는 모든 다리가 `False`로 잘 정의됨). `quattro_core_ros/gain_scheduler_node`가 이 토픽을 구독해 MIT swing/stance joint gain을 전환한다(`docs/packages/quattro_core_ros.md`, `docs/control/gain_tuning.md`).
 
 **서비스**: `gait/enable` (`std_srvs/SetBool`, stepping ↔ 정지-시야 전환), `balance/enable` (`std_srvs/SetBool`, IMU PID on/off).
 

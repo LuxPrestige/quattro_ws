@@ -23,7 +23,7 @@ src/quattro_description/
 |---|---|---|
 | `calibration_file` | `../config/calibration.yaml` | 관절별 `can_interface`/`can_id`/`direction`/`offset`/`kp`/`kd`(+선택적 `current_limit`) YAML |
 | `simulation` | `false` | `true`면 `gz_ros2_control/GazeboSimSystem`, `false`면 `quattro_hardware/QuattroSystem` |
-| `hardware_control_method` | `mit` | `direct_position` / `direct_velocity` / `direct_torque` / `mit` — 실물 하드웨어일 때만 의미 있음 |
+| `hardware_control_method` | `mit` | `direct_position` / `direct_velocity` / `direct_torque` / `mit`. 실물 하드웨어(`quattro_hardware_joint`)는 4개 값 모두 의미 있음. 시뮬레이션(`quattro_simulation_joint`)은 `mit` 여부만 확인 — 그 외 값은 전부 기존 `direct_position` 동등 인터페이스로 취급 |
 | `apply_position_gains`, `position_gain`, `velocity_gain`, `velocity_integrator_gain` | `false`, `0.0`×3 | GDS68 runtime position/velocity gain을 configure 단계에서 덮어쓸지 여부 |
 | `motor_activation_interval_ms` | `100` | 모터 순차 활성화 안정화 간격 |
 | `simulation_controllers` | `../../quattro_gazebo/config/gazebo_controllers.yaml` | Gazebo `ros2_control` 플러그인에 전달되는 controller yaml 경로 |
@@ -37,9 +37,14 @@ src/quattro_description/
 | `direct_torque` | `effort` |
 | `mit` | `position`, `velocity`, `kp`, `kd`, `effort` (5개 전부) |
 
-모든 경우 state interface는 `position`/`velocity`/`effort` 3개로 고정. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정), `current_limit`, `mit_kp`, `mit_kd`를 넘긴다 — 이 값들은 `quattro_hardware/QuattroSystem` 구현이 소비할 계약이다(`docs/packages/quattro_hardware.md` 참고, 현재 해당 패키지는 코드 없음).
+모든 경우 state interface는 `position`/`velocity`/`effort` 3개로 고정. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정), `current_limit`, `mit_kp`, `mit_kd`를 넘긴다 — 이 값들은 `quattro_hardware/QuattroSystem` 구현이 소비하는 계약이다(`docs/packages/quattro_hardware.md` 참고).
 
-**`quattro_simulation_joint` 매크로**: Gazebo용 최소 구성(`position` command, `position`/`velocity`/`effort` state, 초기값 지정).
+**`quattro_simulation_joint` 매크로**: Gazebo용 구성(`position`/`velocity`/`effort` state, 초기값 지정). command interface는 `hardware_control_method`에 따라 갈린다 — `gz_ros2_control`의 표준 `GazeboSimSystem`이 `position`/`velocity`/`effort` 표준 interface만 이해하고 GIM6010 MIT의 `kp`/`kd` 필드는 모르기 때문에, 실기 `quattro_hardware_joint`와 똑같이 5개를 내보낼 수 없다:
+
+| `hardware_control_method` | command interface | 소비하는 controller |
+|---|---|---|
+| `mit` | `effort` 1개 | `quattro_controllers/MitTrajectoryController`(`command_mode: effort_emulation`) — host에서 MIT PD를 계산해 `effort`로 쓴다(`docs/packages/quattro_controllers.md`) |
+| 그 외(기본 `direct_position`) | `position` 1개 | `joint_trajectory_controller/JointTrajectoryController`(기존과 동일, 변경 없음) |
 
 **`<ros2_control name="QuattroSystem" type="system">`**: 실제 하드웨어 플러그인 파라미터(`control_method`, gain 관련, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `engagement_duration_ms`, `telemetry_period_ms`)를 12관절 매크로 호출과 함께 선언한다. 이 파라미터 이름 자체가 `quattro_hardware::QuattroSystem`이 `on_init`에서 읽어야 할 계약이다.
 

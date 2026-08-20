@@ -98,12 +98,33 @@
     </joint>
   </xacro:macro>
 
+  <!--
+    simulation:=true always uses gz_ros2_control/GazeboSimSystem, whose
+    stock implementation only understands the standard interface names
+    (position/velocity/effort); it has no notion of the GIM6010 MIT
+    frame's per-joint kp/kd fields. So unlike the real-hardware branch
+    above, this macro cannot expose position/velocity/kp/kd/effort for
+    hardware_control_method=mit. Instead it exposes a single `effort`
+    command interface, and quattro_controllers/MitTrajectoryController's
+    command_mode=effort_emulation computes the MIT PD law on the host and
+    writes the result there (docs/packages/quattro_controllers.md,
+    docs/gazebo.md). Every other hardware_control_method keeps the
+    original position-only interface, unchanged.
+  -->
   <xacro:macro name="quattro_simulation_joint" params="name lower upper initial_value">
     <joint name="${name}">
-      <command_interface name="position">
-        <param name="min">${lower}</param>
-        <param name="max">${upper}</param>
-      </command_interface>
+      <xacro:if value="${hardware_control_method == 'mit'}">
+        <command_interface name="effort">
+          <param name="min">-40.0</param>
+          <param name="max">40.0</param>
+        </command_interface>
+      </xacro:if>
+      <xacro:unless value="${hardware_control_method == 'mit'}">
+        <command_interface name="position">
+          <param name="min">${lower}</param>
+          <param name="max">${upper}</param>
+        </command_interface>
+      </xacro:unless>
       <state_interface name="position">
         <param name="initial_value">${initial_value}</param>
       </state_interface>

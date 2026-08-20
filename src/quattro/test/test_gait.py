@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from quattro.gait import GaitGenerator, GaitParameters
+from quattro.gait import FootTrajectoryState, GaitGenerator, GaitParameters
 from quattro.gait_controller import ramp_value, staged_joint_targets
 from quattro.kinematics import LEG_NAMES, QuadrupedKinematics
 
@@ -152,6 +152,111 @@ def test_velocity_above_limit_is_rejected():
 
     with pytest.raises(ValueError):
         generator.update(0.01, (1.0, 0.0))
+
+
+def _numerical_derivative(function, phase, step=1.0e-6):
+    return (function(phase + step) - function(phase - step)) / (2.0 * step)
+
+
+def test_bezier_swing_velocity_matches_numerical_derivative():
+    half_step, direction, clearance = 0.05, 0.3, 0.04
+
+    def position(phase):
+        return GaitGenerator.bezier_swing(phase, half_step, direction, clearance)
+
+    for phase in (0.05, 0.25, 0.5, 0.75, 0.95):
+        _, velocity, _ = GaitGenerator.bezier_swing_with_derivatives(
+            phase, half_step, direction, clearance)
+        expected = _numerical_derivative(position, phase)
+        assert velocity == pytest.approx(expected, abs=1e-4)
+
+
+def test_bezier_swing_acceleration_matches_numerical_derivative():
+    half_step, direction, clearance = 0.05, 0.3, 0.04
+
+    def velocity(phase):
+        _, velocity_value, _ = GaitGenerator.bezier_swing_with_derivatives(
+            phase, half_step, direction, clearance)
+        return velocity_value
+
+    for phase in (0.05, 0.25, 0.5, 0.75, 0.95):
+        _, _, acceleration = GaitGenerator.bezier_swing_with_derivatives(
+            phase, half_step, direction, clearance)
+        expected = _numerical_derivative(velocity, phase)
+        assert acceleration == pytest.approx(expected, abs=1e-2)
+
+
+def test_sine_stance_velocity_matches_numerical_derivative():
+    half_step, direction, penetration = 0.05, -0.2, 0.008
+
+    def position(phase):
+        return GaitGenerator.sine_stance(phase, half_step, direction, penetration)
+
+    for phase in (0.05, 0.25, 0.5, 0.75, 0.95):
+        _, velocity, _ = GaitGenerator.sine_stance_with_derivatives(
+            phase, half_step, direction, penetration)
+        expected = _numerical_derivative(position, phase)
+        assert velocity == pytest.approx(expected, abs=1e-4)
+
+
+def test_sine_stance_acceleration_matches_numerical_derivative():
+    half_step, direction, penetration = 0.05, -0.2, 0.008
+
+    def velocity(phase):
+        _, velocity_value, _ = GaitGenerator.sine_stance_with_derivatives(
+            phase, half_step, direction, penetration)
+        return velocity_value
+
+    for phase in (0.05, 0.25, 0.5, 0.75, 0.95):
+        _, _, acceleration = GaitGenerator.sine_stance_with_derivatives(
+            phase, half_step, direction, penetration)
+        expected = _numerical_derivative(velocity, phase)
+        assert acceleration == pytest.approx(expected, abs=1e-2)
+
+
+def test_update_states_matches_update_positions():
+    generator = GaitGenerator()
+
+    for _ in range(20):
+        positions = generator.update(0.01, (0.1, 0.03), 0.15)
+
+    generator_replay = GaitGenerator()
+    for _ in range(19):
+        generator_replay.update_states(0.01, (0.1, 0.03), 0.15)
+    states = generator_replay.update_states(0.01, (0.1, 0.03), 0.15)
+
+    for name in LEG_NAMES:
+        assert isinstance(states[name], FootTrajectoryState)
+        assert states[name].position == pytest.approx(positions[name])
+
+
+def test_update_states_reports_phase_and_swing_state():
+    generator = GaitGenerator()
+    generator.reset(0.7)
+
+    states = generator.update_states(0.001, (0.1, 0.0), 0.0)
+
+    for name in LEG_NAMES:
+        state = states[name]
+        assert 0.0 <= state.phase <= 1.0
+        assert isinstance(state.in_swing, bool)
+        assert np.all(np.isfinite(state.velocity))
+        assert np.all(np.isfinite(state.acceleration))
+    swinging = [states[name].in_swing for name in LEG_NAMES]
+    assert any(swinging)
+    assert not all(swinging)
+
+
+def test_update_states_velocity_and_acceleration_are_finite_when_stopped():
+    generator = GaitGenerator()
+    generator.update(0.1, (0.2, 0.0))
+
+    states = generator.update_states(0.01, complete_cycle_on_stop=False)
+
+    for name in LEG_NAMES:
+        assert np.all(np.isfinite(states[name].velocity))
+        assert np.all(np.isfinite(states[name].acceleration))
+        assert states[name].in_swing is False
 
 
 def test_stop_ramp_reduces_command_without_crossing_zero():

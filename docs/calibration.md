@@ -2,7 +2,7 @@
 
 ## 상태
 
-`calibration_gui`는 `quattro_hardware` 재작성이 끝난 뒤 다시 구현될 도구다. `quattro_hardware`는 현재 코드가 없으므로(설계는 `docs/packages/quattro_hardware.md` 5절 참고) 이 문서의 실행 명령은 재작성 완료 후 목표 절차이며, 좌표 변환 식과 안전 절차는 계속 유효하다.
+`calibration_gui`는 `quattro_hardware`에 구현되어 있다(`docs/packages/quattro_hardware.md` 5절). 실기 CAN bus·모터 연동은 이 개발 환경에 실물 CAN이 없어 아직 검증되지 않았으므로, 이 문서의 실행 명령은 실기 검증 전 목표 절차로 읽는다 — 좌표 변환 식과 안전 절차는 코드와 함께 이미 구현되어 있다.
 
 ## 목적
 

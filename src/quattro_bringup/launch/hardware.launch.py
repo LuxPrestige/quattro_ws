@@ -69,6 +69,7 @@ def launch_setup(context, *args, **kwargs):
     controller_file = LaunchConfiguration('controller_file')
     hardware_control_method = LaunchConfiguration('hardware_control_method')
     command_controller_name = LaunchConfiguration('command_controller_name')
+    use_gain_scheduler = LaunchConfiguration('use_gain_scheduler')
     apply_position_gains = LaunchConfiguration('apply_position_gains')
     position_gain = LaunchConfiguration('position_gain')
     velocity_gain = LaunchConfiguration('velocity_gain')
@@ -86,6 +87,8 @@ def launch_setup(context, *args, **kwargs):
         FindPackageShare('quattro_sensors'), 'config', 'bno085.yaml'])
     teleop_parameters = PathJoinSubstitution([
         FindPackageShare('quattro_teleop'), 'config', 'switch_pro.yaml'])
+    gain_scheduler_parameters = PathJoinSubstitution([
+        FindPackageShare('quattro_bringup'), 'config', 'gain_scheduler.yaml'])
 
     robot_description = {
         'robot_description': ParameterValue(
@@ -185,6 +188,19 @@ def launch_setup(context, *args, **kwargs):
             "' in ('direct_position', 'mit')",
         ])),
     )
+    gain_scheduler = Node(
+        package='quattro_core_ros',
+        executable='gain_scheduler_node',
+        output='screen',
+        parameters=[
+            gain_scheduler_parameters,
+            {'target_controller_node': command_controller_name, 'use_sim_time': False},
+        ],
+        condition=IfCondition(PythonExpression([
+            "'", hardware_control_method, "' == 'mit' and '",
+            use_gain_scheduler, "' == 'true'",
+        ])),
+    )
     imu = Node(
         package='quattro_sensors',
         executable='bno085_node',
@@ -230,7 +246,7 @@ def launch_setup(context, *args, **kwargs):
         if event.returncode != 0:
             return [EmitEvent(event=Shutdown(
                 reason='command controller failed to start'))]
-        return [gait_controller]
+        return [gait_controller, gain_scheduler]
 
     start_gait_controller = RegisterEventHandler(
         OnProcessExit(
@@ -322,5 +338,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'use_teleop', default_value='true',
             description='Start joystick input and Quattro teleoperation.'),
+        DeclareLaunchArgument(
+            'use_gain_scheduler', default_value='true',
+            description=(
+                'Start quattro_core_ros/gain_scheduler_node when '
+                'hardware_control_method=mit, switching MIT joint gain '
+                'between swing/stance profiles (docs/control/'
+                'gain_tuning.md). Ignored otherwise.')),
         OpaqueFunction(function=launch_setup),
     ])

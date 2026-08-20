@@ -14,7 +14,8 @@ src/quattro_bringup/
 ├── config/hardware_controllers_mit.yaml       # 기본: mit_trajectory_controller
 ├── config/hardware_controllers.yaml           # direct_position: joint_trajectory_controller
 ├── config/hardware_controllers_velocity.yaml  # direct_velocity: forward_command_controller(velocity)
-└── config/hardware_controllers_torque.yaml    # direct_torque: forward_command_controller(effort)
+├── config/hardware_controllers_torque.yaml    # direct_torque: forward_command_controller(effort)
+└── config/gain_scheduler.yaml                 # mit에서 quattro_core_ros/gain_scheduler_node 파라미터
 ```
 
 ## 실행 전 안전 확인
@@ -43,8 +44,11 @@ src/quattro_bringup/
 | `start_gait_enabled` | `false` | 활성화 직후 초기 자세를 바로 명령할지 여부(12축 동시 하중이므로 기본 비활성) |
 | `staged_initial_pose` | `true` | 초기 자세를 다리 단위(3관절씩) 순차 전환 |
 | `use_imu`, `use_teleop` | `true`, `true` | BNO085/joystick teleop 노드 시작 여부 |
+| `use_gain_scheduler` | `true` | `hardware_control_method=mit`일 때 `quattro_core_ros/gain_scheduler_node` 시작 여부(그 외 값에서는 무시) |
 
-**흐름**: `robot_state_publisher` + `controller_manager` 시작 → `hardware_spawner --activate QuattroSystem` → 성공 시 `joint_state_broadcaster` → 성공 시 `command_controller_name` spawner → 성공 시(`hardware_control_method`가 `direct_position`/`mit`일 때만) `gait_controller` 시작(각 단계는 이전 단계 프로세스 종료 이벤트로 트리거). IMU(`use_imu`)와 teleop(`use_teleop`, joystick 노드 + `teleop_node`, `start_stepping:=true` 고정)은 조건부로 병렬 시작한다. `controller_manager`가 종료되면 전체 launch를 종료한다(`Shutdown` 이벤트) — fault/timeout으로 하드웨어 lifecycle이 안전 상태로 전환된 뒤에도 동일하게 적용된다.
+**흐름**: `robot_state_publisher` + `controller_manager` 시작 → `hardware_spawner --activate QuattroSystem` → 성공 시 `joint_state_broadcaster` → 성공 시 `command_controller_name` spawner → 성공 시(`hardware_control_method`가 `direct_position`/`mit`일 때만) `gait_controller` 시작, 그리고(`hardware_control_method=mit`이고 `use_gain_scheduler=true`이면) `gain_scheduler_node`도 같은 시점에 시작(각 단계는 이전 단계 프로세스 종료 이벤트로 트리거). IMU(`use_imu`)와 teleop(`use_teleop`, joystick 노드 + `teleop_node`, `start_stepping:=true` 고정)은 조건부로 병렬 시작한다. `controller_manager`가 종료되면 전체 launch를 종료한다(`Shutdown` 이벤트) — fault/timeout으로 하드웨어 lifecycle이 안전 상태로 전환된 뒤에도 동일하게 적용된다.
+
+`gain_scheduler_node`는 `config/gain_scheduler.yaml`의 swing/stance joint gain profile을 `quattro_core::FsmGainTable`로 검증한 뒤, `quattro/gait_controller`가 발행하는 `swing/<leg>` 토픽을 구독해 `command_controller_name`(기본 `mit_trajectory_controller`)의 `kp`/`kd` 파라미터를 실시간으로 전환한다(`docs/packages/quattro_core_ros.md`, `docs/control/gain_tuning.md`). `hardware_control_method`가 `mit`이 아니면 이 노드는 시작되지 않는다(kp/kd 개념 자체가 없음).
 
 `calibration_file`을 launch 시점에 파이썬으로 직접 파싱해(`_mit_gains_from_calibration`) `mit_trajectory_controller`의 `kp`/`kd` 파라미터에 주입한다. 읽기 실패 시 `hardware_controllers_mit.yaml`의 기본값(`kp=60.0, kd=0.8`)으로 대체해 bringup 자체가 막히지 않게 한다. 이 오버라이드는 `mit_trajectory_controller`가 실제로 로드된 경우에만 의미가 있다. 이렇게 `calibration.yaml`을 유일한 gain 소스로 두면, 활성화 중 하드웨어 계층이 쓰는 gain과 활성화 이후 컨트롤러가 쓰는 gain이 같은 값에서 이어진다.
 
@@ -108,3 +112,4 @@ ip -details -statistics link show can1
 - 하드웨어/CAN 설계, 활성화 절차, 단일 모터 시험: `docs/packages/quattro_hardware.md`
 - 사용하는 드라이버: `docs/packages/gim6010_driver.md`
 - Docker/원격 실행 환경: `docs/development_environment.md`
+- gain scheduling(`gain_scheduler_node`), gain 구조: `docs/packages/quattro_core_ros.md`, `docs/control/gain_tuning.md`

@@ -4,7 +4,10 @@ Reference-derived Bézier gait generation for Quattro.
 The implementation retains the reference gait's 12-point swing curve, sine
 stance curve, diagonal trot phasing, yaw-circle motion and touchdown phase
 resynchronization. Public values use SI units and the module has no ROS
-dependency.
+dependency. ``GaitGenerator.update_states`` extends the original
+position-only ``update`` with analytic foot velocity/acceleration
+(``FootTrajectoryState``), computed from closed-form Bezier/sine
+derivatives rather than finite differences.
 """
 
 from dataclasses import dataclass
@@ -54,6 +57,24 @@ class FootPhase:
     """Local phase information for one leg."""
 
     normalized: float
+    in_swing: bool
+
+
+@dataclass(frozen=True)
+class FootTrajectoryState:
+    """
+    Foot trajectory target with analytic velocity and acceleration.
+
+    Position is metres in the nominal (body) frame, matching the dict
+    returned by ``GaitGenerator.update``. Velocity/acceleration are the
+    time-derivatives of that same trajectory (m/s, m/s^2), obtained from the
+    closed-form Bezier/sine derivatives -- not finite differences.
+    """
+
+    position: NDArray[np.float64]
+    velocity: NDArray[np.float64]
+    acceleration: NDArray[np.float64]
+    phase: float
     in_swing: bool
 
 
@@ -135,15 +156,61 @@ class GaitGenerator:
                        / (1.0 - stance_fraction))
         return FootPhase(swing_phase, True)
 
-    @classmethod
-    def _bezier(cls, phase: float, control_points: NDArray[np.float64]) -> float:
-        """Evaluate the reference degree-11 Bernstein polynomial."""
-        degree = cls._CONTROL_POINT_COUNT - 1
+    @staticmethod
+    def _bernstein(phase: float, control_points: NDArray[np.float64]) -> float:
+        """Evaluate a Bernstein polynomial of degree len(control_points)-1."""
+        degree = len(control_points) - 1
         return float(sum(
             point * math.comb(degree, index)
             * phase ** index * (1.0 - phase) ** (degree - index)
             for index, point in enumerate(control_points)
         ))
+
+    @classmethod
+    def _bernstein_with_derivatives(
+        cls, phase: float, control_points: NDArray[np.float64],
+    ) -> tuple[float, float, float]:
+        """
+        Return (value, d/ds, d^2/ds^2) of a Bernstein polynomial at s=phase.
+
+        The derivative of a degree-n Bezier curve is itself a degree-(n-1)
+        Bezier curve over forward-difference control points scaled by n
+        (standard Bernstein-derivative identity), so both derivatives are
+        analytic -- no finite differencing of the curve itself.
+        """
+        points = np.asarray(control_points, dtype=float)
+        degree = len(points) - 1
+        value = cls._bernstein(phase, points)
+        if degree >= 1:
+            first_points = np.diff(points) * degree
+            first = cls._bernstein(phase, first_points)
+        else:
+            first = 0.0
+        if degree >= 2:
+            second_points = np.diff(first_points) * (degree - 1)
+            second = cls._bernstein(phase, second_points)
+        else:
+            second = 0.0
+        return value, first, second
+
+    @classmethod
+    def _bezier(cls, phase: float, control_points: NDArray[np.float64]) -> float:
+        """Evaluate the reference degree-11 Bernstein polynomial."""
+        return cls._bernstein(phase, control_points)
+
+    @classmethod
+    def _bezier_swing_control_points(
+        cls, half_step: float, clearance_height: float,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        step = half_step * np.array([
+            -1.0, -1.4, -1.5, -1.5, -1.5, 0.0,
+            0.0, 0.0, 1.5, 1.5, 1.4, 1.0,
+        ])
+        vertical = clearance_height * np.array([
+            0.0, 0.0, 0.9, 0.9, 0.9, 0.9,
+            0.9, 1.1, 1.1, 1.1, 0.0, 0.0,
+        ])
+        return step, vertical
 
     @classmethod
     def bezier_swing(
@@ -154,20 +221,37 @@ class GaitGenerator:
         clearance_height: float,
     ) -> NDArray[np.float64]:
         """Evaluate the reference 12-control-point swing trajectory."""
-        step = half_step * np.array([
-            -1.0, -1.4, -1.5, -1.5, -1.5, 0.0,
-            0.0, 0.0, 1.5, 1.5, 1.4, 1.0,
-        ])
-        vertical = clearance_height * np.array([
-            0.0, 0.0, 0.9, 0.9, 0.9, 0.9,
-            0.9, 1.1, 1.1, 1.1, 0.0, 0.0,
-        ])
-        distance = cls._bezier(phase, step)
-        return np.array([
-            distance * math.cos(direction),
-            distance * math.sin(direction),
-            cls._bezier(phase, vertical),
-        ])
+        position, _, _ = cls.bezier_swing_with_derivatives(
+            phase, half_step, direction, clearance_height)
+        return position
+
+    @classmethod
+    def bezier_swing_with_derivatives(
+        cls,
+        phase: float,
+        half_step: float,
+        direction: float,
+        clearance_height: float,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """
+        Return (position, d/ds, d^2/ds^2) of the swing curve at s=phase.
+
+        Derivatives are with respect to normalized phase s, not time --
+        callers divide by the swing segment duration (and its square) to
+        obtain m/s and m/s^2.
+        """
+        step, vertical = cls._bezier_swing_control_points(
+            half_step, clearance_height)
+        distance, d_distance, dd_distance = cls._bernstein_with_derivatives(
+            phase, step)
+        height, d_height, dd_height = cls._bernstein_with_derivatives(
+            phase, vertical)
+        cos_d, sin_d = math.cos(direction), math.sin(direction)
+        position = np.array([distance * cos_d, distance * sin_d, height])
+        velocity = np.array([d_distance * cos_d, d_distance * sin_d, d_height])
+        acceleration = np.array(
+            [dd_distance * cos_d, dd_distance * sin_d, dd_height])
+        return position, velocity, acceleration
 
     @staticmethod
     def sine_stance(
@@ -177,12 +261,34 @@ class GaitGenerator:
         penetration_depth: float,
     ) -> NDArray[np.float64]:
         """Evaluate the reference sine stance trajectory."""
+        position, _, _ = GaitGenerator.sine_stance_with_derivatives(
+            phase, half_step, direction, penetration_depth)
+        return position
+
+    @staticmethod
+    def sine_stance_with_derivatives(
+        phase: float,
+        half_step: float,
+        direction: float,
+        penetration_depth: float,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """
+        Return (position, d/ds, d^2/ds^2) of the stance curve at s=phase.
+
+        Derivatives are with respect to normalized phase s (see
+        ``bezier_swing_with_derivatives``); both are closed-form since the
+        stance curve is an explicit sine/linear function of phase.
+        """
+        cos_d, sin_d = math.cos(direction), math.sin(direction)
         distance = half_step * (1.0 - 2.0 * phase)
-        return np.array([
-            distance * math.cos(direction),
-            distance * math.sin(direction),
-            -penetration_depth * math.sin(math.pi * phase),
-        ])
+        d_distance = -2.0 * half_step
+        height = -penetration_depth * math.sin(math.pi * phase)
+        d_height = -penetration_depth * math.pi * math.cos(math.pi * phase)
+        dd_height = penetration_depth * math.pi ** 2 * math.sin(math.pi * phase)
+        position = np.array([distance * cos_d, distance * sin_d, height])
+        velocity = np.array([d_distance * cos_d, d_distance * sin_d, d_height])
+        acceleration = np.array([0.0, 0.0, dd_height])
+        return position, velocity, acceleration
 
     def _yaw_direction(self, leg_name: str) -> float:
         """Return the tangential yaw-circle direction for a foot."""
@@ -196,6 +302,41 @@ class GaitGenerator:
             return math.pi / 2.0 + base_direction + phase_modifier
         return math.pi / 2.0 - base_direction + phase_modifier
 
+    def _trajectory_offset_with_derivatives(
+        self,
+        leg_name: str,
+        phase: FootPhase,
+        linear_half_step: float,
+        linear_direction: float,
+        yaw_half_step: float,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """
+        Return (offset, velocity, acceleration) for one leg's curve.
+
+        velocity/acceleration are with respect to time: the phase-derivative
+        (see ``bezier_swing_with_derivatives``) is scaled by the swing or
+        stance segment duration, since normalized phase advances at
+        1/segment_duration while that segment is active.
+        """
+        if phase.in_swing:
+            curve = self.bezier_swing_with_derivatives
+            height = self.parameters.clearance_height
+            segment_duration = self.parameters.swing_duration
+        else:
+            curve = self.sine_stance_with_derivatives
+            height = self.parameters.penetration_depth
+            segment_duration = self.parameters.stance_duration
+        linear_pos, linear_vel, linear_acc = curve(
+            phase.normalized, linear_half_step, linear_direction, height)
+        rotational_pos, rotational_vel, rotational_acc = curve(
+            phase.normalized, yaw_half_step,
+            self._yaw_direction(leg_name), height)
+        offset = linear_pos + rotational_pos
+        velocity = (linear_vel + rotational_vel) / segment_duration
+        acceleration = (linear_acc + rotational_acc) / (segment_duration ** 2)
+        self._previous_offsets[leg_name] = offset
+        return offset, velocity, acceleration
+
     def _trajectory_offset(
         self,
         leg_name: str,
@@ -204,16 +345,8 @@ class GaitGenerator:
         linear_direction: float,
         yaw_half_step: float,
     ) -> NDArray[np.float64]:
-        curve = self.bezier_swing if phase.in_swing else self.sine_stance
-        height = (self.parameters.clearance_height if phase.in_swing
-                  else self.parameters.penetration_depth)
-        linear = curve(
-            phase.normalized, linear_half_step, linear_direction, height)
-        rotational = curve(
-            phase.normalized, yaw_half_step,
-            self._yaw_direction(leg_name), height)
-        offset = linear + rotational
-        self._previous_offsets[leg_name] = offset
+        offset, _, _ = self._trajectory_offset_with_derivatives(
+            leg_name, phase, linear_half_step, linear_direction, yaw_half_step)
         return offset
 
     def update(
@@ -230,6 +363,29 @@ class GaitGenerator:
         Linear velocity is metres per second and yaw rate is radians per
         second. Touchdown of the front-left reference leg near the end of
         swing resynchronizes the gait clock, matching the reference behavior.
+
+        This is a thin wrapper over ``update_states`` for backward
+        compatibility; prefer ``update_states`` when velocity/acceleration
+        are also needed, since it computes the same trajectory once.
+        """
+        states = self.update_states(
+            dt, linear_velocity, yaw_rate, contacts, complete_cycle_on_stop)
+        return {name: state.position for name, state in states.items()}
+
+    def update_states(
+        self,
+        dt: float,
+        linear_velocity: Sequence[float] = (0.0, 0.0),
+        yaw_rate: float = 0.0,
+        contacts: Mapping[str, bool] | None = None,
+        complete_cycle_on_stop: bool = True,
+    ) -> dict[str, FootTrajectoryState]:
+        """
+        Advance the reference gait and return full foot trajectory states.
+
+        Same arguments and gait-clock behavior as ``update``, but returns
+        analytic velocity/acceleration alongside position for every leg
+        instead of position alone.
         """
         velocity = np.asarray(linear_velocity, dtype=float)
         if not math.isfinite(dt) or dt < 0.0:
@@ -266,22 +422,34 @@ class GaitGenerator:
             self._last_yaw_rate = 0.0
 
         if not moving:
-            targets = {}
+            states = {}
             return_step = self.parameters.stop_return_speed * dt
             all_nominal = True
             for name in LEG_NAMES:
                 offset = self._previous_offsets[name]
+                offset_before = offset.copy()
                 distance = float(np.linalg.norm(offset))
                 if distance <= return_step:
                     offset.fill(0.0)
                 elif distance > 0.0:
                     offset *= (distance - return_step) / distance
                     all_nominal = False
-                targets[name] = self._nominal_feet[name] + offset.copy()
+                # Rate-limited ease-back to nominal stance: the velocity
+                # command is the exact applied step rate, not a finite
+                # difference of an external trajectory function.
+                velocity = ((offset - offset_before) / dt
+                            if dt > 0.0 else np.zeros(3))
+                states[name] = FootTrajectoryState(
+                    position=self._nominal_feet[name] + offset.copy(),
+                    velocity=velocity,
+                    acceleration=np.zeros(3),
+                    phase=0.0,
+                    in_swing=False,
+                )
             if all_nominal:
                 self._time = 0.0
                 self._phase = 0.0
-            return targets
+            return states
 
         cycle_finished = False
         if self._finishing_cycle:
@@ -309,15 +477,22 @@ class GaitGenerator:
         yaw_half_step = (
             0.5 * yaw_rate * self.parameters.stance_duration * mean_radius)
 
-        targets = {}
+        states = {}
         for name in LEG_NAMES:
-            targets[name] = self._nominal_feet[name] + self._trajectory_offset(
-                name, self.leg_phase(name), linear_half_step,
-                linear_direction, yaw_half_step)
+            leg_phase = self.leg_phase(name)
+            offset, velocity, acceleration = self._trajectory_offset_with_derivatives(
+                name, leg_phase, linear_half_step, linear_direction, yaw_half_step)
+            states[name] = FootTrajectoryState(
+                position=self._nominal_feet[name] + offset,
+                velocity=velocity,
+                acceleration=acceleration,
+                phase=leg_phase.normalized,
+                in_swing=leg_phase.in_swing,
+            )
         if cycle_finished:
             self._time = 0.0
             self._phase = 0.0
             self._last_linear_velocity.fill(0.0)
             self._last_yaw_rate = 0.0
             self._finishing_cycle = False
-        return targets
+        return states

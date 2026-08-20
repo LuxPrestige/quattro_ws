@@ -2,7 +2,7 @@
 
 ## 상태: 구현됨
 
-`src/gim6010_driver/`는 라이브러리(`libgim6010_driver.so`)와 진단 CLI(`gim6010_diagnostic`)로 빌드된다. `colcon build --packages-select gim6010_driver`와 유닛 테스트(6절)로 검증했다. `quattro_hardware`는 아직 이 라이브러리를 링크하지 않는다(그 패키지 자체가 코드 없음, `docs/packages/quattro_hardware.md`).
+`src/gim6010_driver/`는 라이브러리(`libgim6010_driver.so`)와 진단 CLI(`gim6010_diagnostic`)로 빌드된다. `colcon build --packages-select gim6010_driver`와 유닛 테스트(6절)로 검증했다. `quattro_hardware`가 이 라이브러리를 `find_package(gim6010_driver)`로 직접 링크한다(`docs/packages/quattro_hardware.md`).
 
 ## 역할
 

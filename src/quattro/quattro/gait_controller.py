@@ -118,6 +118,17 @@ class GaitController(Node):
         self._publisher = self.create_publisher(
             JointTrajectory,
             f'{trajectory_controller_name}/joint_trajectory', 10)
+        # Per-leg swing/stance state, derived from the same GaitGenerator
+        # phase already computed for the trajectory below. Consumed by
+        # quattro_core_ros::GainSchedulerNode to switch MIT joint gain
+        # between swing/stance profiles (docs/control/gain_tuning.md);
+        # published unconditionally (not just while gait_enabled) since a
+        # stationary command still has a well-defined in_swing=False state
+        # for every leg.
+        self._swing_publishers = {
+            name: self.create_publisher(Bool, f'swing/{name}', 10)
+            for name in self._contacts
+        }
         self._subscription = self.create_subscription(
             Twist, 'cmd_vel', self._on_command, 10)
         self.create_subscription(
@@ -276,7 +287,7 @@ class GaitController(Node):
 
         try:
             if self._gait_enabled:
-                feet = self._gait.update(
+                states = self._gait.update_states(
                     1.0 / self._control_frequency,
                     velocity,
                     yaw_rate,
@@ -284,14 +295,23 @@ class GaitController(Node):
                     complete_cycle_on_stop=not immediate_stop,
                 )
             else:
-                feet = self._gait.update(
+                states = self._gait.update_states(
                     1.0 / self._control_frequency, (0.0, 0.0), 0.0,
                     self._contacts, complete_cycle_on_stop=False)
+            for name, publisher in self._swing_publishers.items():
+                publisher.publish(Bool(data=bool(states[name].in_swing)))
+            body_rpy = self._controlled_body_rpy(1.0 / self._control_frequency)
+            feet = {name: state.position for name, state in states.items()}
             positions = self._kinematics.inverse(
-                self._controlled_body_rpy(1.0 / self._control_frequency),
-                self._body_translation,
-                feet,
-            )
+                body_rpy, self._body_translation, feet)
+            # qd_des = damped_pseudoinverse(J(q_des)) * v_des (quattro.md
+            # Phase 3): only meaningful for the steady per-cycle trajectory
+            # point below, not the staged initial-pose ramp, which is a
+            # plain position move with no associated foot velocity target.
+            foot_velocities = {
+                name: state.velocity for name, state in states.items()}
+            velocities = self._kinematics.joint_velocities(
+                body_rpy, positions, foot_velocities)
         except (ValueError, UnreachableTargetError) as error:
             self.get_logger().error(f'Rejected gait command: {error}')
             return
@@ -303,6 +323,8 @@ class GaitController(Node):
                     else 1.0 / self._control_frequency)
         point = JointTrajectoryPoint()
         point.positions = positions.reshape(-1).tolist()
+        if not self._initial_pose_pending:
+            point.velocities = velocities.reshape(-1).tolist()
         seconds = int(duration)
         point.time_from_start.sec = seconds
         point.time_from_start.nanosec = int((duration - seconds) * 1.0e9)

@@ -13,9 +13,10 @@ src/
 ├── quattro_bringup/
 ├── quattro_controllers/
 ├── quattro_gazebo/
-├── quattro_hardware/    # 현재 코드 없음 (재작성 중, docs/packages/quattro_hardware.md 참고)
+├── quattro_hardware/    # 구현됨, docs/packages/quattro_hardware.md 참고
 ├── quattro_sensors/
 ├── quattro_teleop/
+├── quattro_core/         # ROS 비의존 C++ 제어 core, docs/packages/quattro_core.md 참고
 └── gim6010_driver/       # 구현됨, docs/packages/gim6010_driver.md 참고
 ```
 
@@ -87,9 +88,9 @@ SocketCAN 송수신, CAN Simple/MIT command encode·decode, GIM6010 모터 상�
 
 ### `quattro_hardware`
 
-Quattro joint와 실제 GIM6010-8을 연결하는 `ros2_control` 계층(`hardware_interface::SystemInterface` 구현, 클래스명 `QuattroSystem`). **현재 코드가 없다** (재작성 중).
+Quattro joint와 실제 GIM6010-8을 연결하는 `ros2_control` 계층(`hardware_interface::SystemInterface` 구현, 클래스명 `QuattroSystem`). **구현됨.**
 
-`gim6010_driver`를 라이브러리로 직접 링크해 사용하며(별도 프로세스/토픽 경유 아님), joint별 direction/offset/limit 변환과 모터 활성화 시 안전 절차를 담당한다. 설계 명세는 `docs/packages/quattro_hardware.md`.
+`gim6010_driver`를 라이브러리로 직접 링크해 사용하며(별도 프로세스/토픽 경유 아님), joint별 direction/offset/limit 변환과 모터 활성화 시 안전 절차를 담당한다. 상세는 `docs/packages/quattro_hardware.md`.
 
 raw CAN 프레임과 MIT bit packing은 이 패키지에서 구현하지 않는다(`gim6010_driver`의 책임).
 
@@ -104,6 +105,10 @@ BNO085 등 센서 취득 계층.
 Switch Pro Controller와 keyboard 입력을 상위 ROS 명령으로 변환한다.
 
 모터를 직접 제어하지 않는다.
+
+### `quattro_core`
+
+Cheetah-Software 스타일 사족보행 제어 구조를 Quattro에 맞게 재구현하는 ROS 비의존 C++ 라이브러리(`ament_cmake`, C++17). kinematics/Jacobian, foot trajectory, leg controller, state estimation core, balance controller, control FSM을 다루며, ROS 메시지·노드·raw CAN에 의존하지 않는다. 상세는 `docs/packages/quattro_core.md`, Cheetah-Software 대비표는 `docs/references/cheetah_software.md`.
 
 ## 3. 의존 방향
 

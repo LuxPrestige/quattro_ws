@@ -15,6 +15,8 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>quattro</exec_depend>
+  <exec_depend>quattro_controllers</exec_depend>
+  <exec_depend>quattro_core_ros</exec_depend>
   <exec_depend>quattro_description</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
