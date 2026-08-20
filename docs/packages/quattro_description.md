@@ -7,7 +7,7 @@ Quattro의 로봇 모델 패키지(`ament_cmake`). URDF/Xacro, mesh, TF 구조, 
 ```text
 src/quattro_description/
 ├── urdf/quattro.urdf.xacro     # 소스 원본 (생성된 URDF를 직접 수정하지 않음)
-├── meshes/stl/                  # 몸체/다리 STL (visual과 collision이 동일 mesh 사용)
+├── meshes/stl/                  # 몸체/다리 visual용 STL
 ├── rviz/quattro.rviz            # 기본 RViz 설정
 ├── rviz/hardware_remote.rviz    # 원격 하드웨어 시각화용 RViz 설정
 ├── launch/display.launch.py     # joint_state_publisher_gui 기반 단독 모델 확인
@@ -30,6 +30,8 @@ src/quattro_description/
 **`quattro_hardware_joint` 매크로**: joint당 `position` command interface 하나와 `position`/`velocity`/`effort` state interface 3개를 선언한다. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정), `current_limit`을 넘긴다 — 이 값들은 `quattro_hardware/QuattroSystem` 구현이 소비하는 계약이다(`docs/packages/quattro_hardware.md` 참고).
 
 **`quattro_simulation_joint` 매크로**: Gazebo용 구성. joint당 `position` command interface 하나와 `position`(초기값 지정)/`velocity`/`effort` state interface 3개를 선언한다 — `quattro_hardware_joint`와 동일한 command interface 구성이라 `joint_trajectory_controller/JointTrajectoryController`가 실기·시뮬레이션 양쪽에서 그대로 쓰인다.
+
+**geometry 매크로**: `stl_visual`은 기존 STL을 visual에만 사용한다. Collision은 `box_collision`, `cylinder_collision`, `sphere_collision` primitive 매크로로 정의하여 시뮬레이션 접촉 계산을 단순화한다.
 
 **`<ros2_control name="QuattroSystem" type="system">`**: 실제 하드웨어 플러그인 파라미터(gain 관련, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `telemetry_period_ms`)를 12관절 매크로 호출과 함께 선언한다. 이 파라미터 이름 자체가 `quattro_hardware::QuattroSystem`이 `on_init`에서 읽어야 할 계약이다.
 

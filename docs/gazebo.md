@@ -145,9 +145,7 @@ ros2 topic hz /joint_trajectory_controller/joint_trajectory
 
 ## 8. collision 원칙
 
-현재 URDF의 STL visual/collision 구조를 기본으로 유지한다.
-
-성능이나 접촉 안정성 문제가 실제로 확인되지 않은 상태에서 collision을 box/cylinder/sphere로 임의 단순화하지 않는다. 단순 collision이 필요하면 원본 visual geometry와 분리하여 명시적으로 관리한다.
+Visual은 기존 STL mesh를 유지하고 collision은 명시적인 primitive geometry로 분리한다. Base와 upper leg는 box, hip과 lower leg는 cylinder, foot은 sphere를 사용한다.
 
 ## 9. RViz
 

@@ -21,7 +21,7 @@
     Mesh directory:
       package://quattro_description/meshes/stl/
 
-    The same STL is used for both visual and collision geometry.
+    STL files are used for visual geometry only. Collision geometry uses primitives.
     The original URDF used scale="1 1 1", so that value is preserved.
     Change mesh_scale to "0.001 0.001 0.001" only when the STL is exported in millimetres.
   -->
@@ -38,8 +38,7 @@
     <color rgba="0.6 0.6 0.6 1.0"/>
   </material>
 
-  <!-- Creates visual and collision elements from the same STL file. -->
-  <xacro:macro name="stl_visual_collision" params="filename material_name">
+  <xacro:macro name="stl_visual" params="filename material_name">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
@@ -47,10 +46,31 @@
       </geometry>
       <material name="${material_name}"/>
     </visual>
+  </xacro:macro>
+
+  <xacro:macro name="box_collision" params="xyz rpy size">
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
       <geometry>
-        <mesh filename="${mesh_prefix}/${filename}" scale="${mesh_scale}"/>
+        <box size="${size}"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+
+  <xacro:macro name="cylinder_collision" params="xyz rpy radius length">
+    <collision>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <geometry>
+        <cylinder radius="${radius}" length="${length}"/>
+      </geometry>
+    </collision>
+  </xacro:macro>
+
+  <xacro:macro name="sphere_collision" params="xyz radius">
+    <collision>
+      <origin xyz="${xyz}" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${radius}"/>
       </geometry>
     </collision>
   </xacro:macro>
@@ -91,7 +111,8 @@
   <!-- Base                                                             -->
   <!-- ================================================================ -->
   <link name="base_link">
-    <xacro:stl_visual_collision filename="body_frame.stl" material_name="orange"/>
+    <xacro:stl_visual filename="body_frame.stl" material_name="orange"/>
+    <xacro:box_collision xyz="0 0 0" rpy="0 0 0" size="0.43 0.14 0.10"/>
     <inertial>
       <origin xyz="0.001210 -0.000887 -0.007933" rpy="0 0 0"/>
       <mass value="3.092"/>
@@ -109,7 +130,8 @@
   <!-- Front-left leg                                                   -->
   <!-- ================================================================ -->
   <link name="front_left_hip_link">
-    <xacro:stl_visual_collision filename="front_left_hip.stl" material_name="black"/>
+    <xacro:stl_visual filename="front_left_hip.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="-0.003 -0.000913 -0.000423" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -133,7 +155,8 @@
   </joint>
 
   <link name="front_left_upper_leg_link">
-    <xacro:stl_visual_collision filename="left_upper_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="left_upper_leg.stl" material_name="black"/>
+    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="0.00011 -0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -157,7 +180,8 @@
   </joint>
 
   <link name="front_left_lower_leg_link">
-    <xacro:stl_visual_collision filename="left_lower_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="left_lower_leg.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="-0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -176,7 +200,7 @@
     <parent link="front_left_upper_leg_link"/>
     <child link="front_left_lower_leg_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-2.9" upper="1.57079632679" effort="40.0" velocity="4.0"/>
+    <limit lower="-2.4783675378" upper="2.4783675378" effort="40.0" velocity="4.0"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -207,7 +231,8 @@
   <!-- Front-right leg                                                  -->
   <!-- ================================================================ -->
   <link name="front_right_hip_link">
-    <xacro:stl_visual_collision filename="front_right_hip.stl" material_name="black"/>
+    <xacro:stl_visual filename="front_right_hip.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 -0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="-0.003304 0.000913 -0.000118" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -231,7 +256,8 @@
   </joint>
 
   <link name="front_right_upper_leg_link">
-    <xacro:stl_visual_collision filename="right_upper_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="right_upper_leg.stl" material_name="black"/>
+    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="-0.00011 0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -255,7 +281,8 @@
   </joint>
 
   <link name="front_right_lower_leg_link">
-    <xacro:stl_visual_collision filename="right_lower_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="right_lower_leg.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -274,7 +301,7 @@
     <parent link="front_right_upper_leg_link"/>
     <child link="front_right_lower_leg_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-2.9" upper="1.57079632679" effort="40.0" velocity="4.0"/>
+    <limit lower="-2.4783675378" upper="2.4783675378" effort="40.0" velocity="4.0"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -305,7 +332,8 @@
   <!-- Back-left leg                                                    -->
   <!-- ================================================================ -->
   <link name="back_left_hip_link">
-    <xacro:stl_visual_collision filename="back_left_hip.stl" material_name="black"/>
+    <xacro:stl_visual filename="back_left_hip.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="0.003304 -0.000713 -0.000118" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -329,7 +357,8 @@
   </joint>
 
   <link name="back_left_upper_leg_link">
-    <xacro:stl_visual_collision filename="left_upper_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="left_upper_leg.stl" material_name="black"/>
+    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="0.00011 -0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -353,7 +382,8 @@
   </joint>
 
   <link name="back_left_lower_leg_link">
-    <xacro:stl_visual_collision filename="left_lower_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="left_lower_leg.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="-0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -372,7 +402,7 @@
     <parent link="back_left_upper_leg_link"/>
     <child link="back_left_lower_leg_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-2.9" upper="1.57079632679" effort="40.0" velocity="4.0"/>
+    <limit lower="-2.4783675378" upper="2.4783675378" effort="40.0" velocity="4.0"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
@@ -403,7 +433,8 @@
   <!-- Back-right leg                                                   -->
   <!-- ================================================================ -->
   <link name="back_right_hip_link">
-    <xacro:stl_visual_collision filename="back_right_hip.stl" material_name="black"/>
+    <xacro:stl_visual filename="back_right_hip.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 -0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="0.003 0.001113 -0.000423" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -427,7 +458,8 @@
   </joint>
 
   <link name="back_right_upper_leg_link">
-    <xacro:stl_visual_collision filename="right_upper_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="right_upper_leg.stl" material_name="black"/>
+    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="-0.00011 0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -451,7 +483,8 @@
   </joint>
 
   <link name="back_right_lower_leg_link">
-    <xacro:stl_visual_collision filename="right_lower_leg.stl" material_name="black"/>
+    <xacro:stl_visual filename="right_lower_leg.stl" material_name="black"/>
+    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -470,7 +503,7 @@
     <parent link="back_right_upper_leg_link"/>
     <child link="back_right_lower_leg_link"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-2.9" upper="1.57079632679" effort="40.0" velocity="4.0"/>
+    <limit lower="-2.4783675378" upper="2.4783675378" effort="40.0" velocity="4.0"/>
     <dynamics damping="0.0" friction="0.0"/>
   </joint>
 
