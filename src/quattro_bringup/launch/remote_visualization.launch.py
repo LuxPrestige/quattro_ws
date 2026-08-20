@@ -23,9 +23,23 @@ def generate_launch_description() -> LaunchDescription:
         description_share, 'urdf', 'quattro.urdf.xacro'])
     rviz_file = PathJoinSubstitution([
         description_share, 'rviz', 'hardware_remote.rviz'])
-    robot_description = {
+    joint_stale_description = {
         'robot_description': ParameterValue(
-            Command([FindExecutable(name='xacro'), ' ', xacro_file]),
+            Command([
+                FindExecutable(name='xacro'), ' ', xacro_file,
+                ' visual_color_override:=true',
+                " visual_color:='0.05 0.05 0.05 1.0'",
+            ]),
+            value_type=str,
+        )
+    }
+    joint_angle_description = {
+        'robot_description': ParameterValue(
+            Command([
+                FindExecutable(name='xacro'), ' ', xacro_file,
+                ' visual_color_override:=true',
+                " visual_color:='1.0 0.5 0.0 1.0'",
+            ]),
             value_type=str,
         )
     }
@@ -48,26 +62,51 @@ def generate_launch_description() -> LaunchDescription:
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
-            name='target_robot_state_publisher',
+            name='joint_stale_robot_state_publisher',
             output='screen',
             parameters=[
-                robot_description,
-                {'frame_prefix': 'target/', 'use_sim_time': use_sim_time},
+                joint_stale_description,
+                {'frame_prefix': 'joint_stale/', 'use_sim_time': use_sim_time},
+            ],
+            remappings=[
+                ('robot_description', 'joint_stale_robot_description'),
+            ],
+        ),
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='joint_angle_robot_state_publisher',
+            output='screen',
+            parameters=[
+                joint_angle_description,
+                {'frame_prefix': 'joint_angle/', 'use_sim_time': use_sim_time},
             ],
             remappings=[
                 ('joint_states', 'target_joint_states'),
-                ('robot_description', 'target_robot_description'),
+                ('robot_description', 'joint_angle_robot_description'),
             ],
         ),
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            name='target_base_transform',
+            name='joint_stale_base_transform',
             arguments=[
                 '--x', '0', '--y', '0', '--z', '0',
                 '--roll', '0', '--pitch', '0', '--yaw', '0',
                 '--frame-id', 'base_link',
-                '--child-frame-id', 'target/base_link',
+                '--child-frame-id', 'joint_stale/base_link',
+            ],
+            parameters=[{'use_sim_time': use_sim_time}],
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='joint_angle_base_transform',
+            arguments=[
+                '--x', '0', '--y', '0', '--z', '0',
+                '--roll', '0', '--pitch', '0', '--yaw', '0',
+                '--frame-id', 'base_link',
+                '--child-frame-id', 'joint_angle/base_link',
             ],
             parameters=[{'use_sim_time': use_sim_time}],
         ),

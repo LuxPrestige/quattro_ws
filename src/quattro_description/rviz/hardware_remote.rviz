@@ -19,7 +19,7 @@ Visualization Manager:
       Reference Frame: <Fixed Frame>
 
     - Class: rviz_default_plugins/RobotModel
-      Name: Actual State
+      Name: JointStale - Encoder (Black)
       Enabled: true
       Alpha: 1
       Visual Enabled: true
@@ -30,14 +30,14 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /robot_description
-      TF Prefix: ""
+        Value: /joint_stale_robot_description
+      TF Prefix: joint_stale/
       Update Interval: 0
 
     - Class: rviz_default_plugins/RobotModel
-      Name: Target Command
+      Name: JointAngle - Command (Orange)
       Enabled: true
-      Alpha: 0.45
+      Alpha: 0.65
       Visual Enabled: true
       Collision Enabled: false
       Description Source: Topic
@@ -46,8 +46,8 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /target_robot_description
-      TF Prefix: target/
+        Value: /joint_angle_robot_description
+      TF Prefix: joint_angle/
       Update Interval: 0
 
     - Class: rviz_default_plugins/TF

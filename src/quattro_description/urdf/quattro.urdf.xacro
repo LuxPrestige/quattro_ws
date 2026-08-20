@@ -10,6 +10,8 @@
   <xacro:arg name="velocity_gain" default="0.0"/>
   <xacro:arg name="velocity_integrator_gain" default="0.0"/>
   <xacro:arg name="motor_activation_interval_ms" default="100"/>
+  <xacro:arg name="visual_color_override" default="false"/>
+  <xacro:arg name="visual_color" default="0.1 0.1 0.1 1.0"/>
   <xacro:arg
     name="simulation_controllers"
     default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
@@ -37,6 +39,9 @@
   <material name="grey">
     <color rgba="0.6 0.6 0.6 1.0"/>
   </material>
+  <material name="visual_color_override">
+    <color rgba="$(arg visual_color)"/>
+  </material>
 
   <xacro:macro name="stl_visual" params="filename material_name">
     <visual>
@@ -44,7 +49,12 @@
       <geometry>
         <mesh filename="${mesh_prefix}/${filename}" scale="${mesh_scale}"/>
       </geometry>
-      <material name="${material_name}"/>
+      <xacro:if value="$(arg visual_color_override)">
+        <material name="visual_color_override"/>
+      </xacro:if>
+      <xacro:unless value="$(arg visual_color_override)">
+        <material name="${material_name}"/>
+      </xacro:unless>
     </visual>
   </xacro:macro>
 
@@ -208,7 +218,12 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.025"/></geometry>
-      <material name="grey"/>
+      <xacro:if value="$(arg visual_color_override)">
+        <material name="visual_color_override"/>
+      </xacro:if>
+      <xacro:unless value="$(arg visual_color_override)">
+        <material name="grey"/>
+      </xacro:unless>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -309,7 +324,12 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.025"/></geometry>
-      <material name="grey"/>
+      <xacro:if value="$(arg visual_color_override)">
+        <material name="visual_color_override"/>
+      </xacro:if>
+      <xacro:unless value="$(arg visual_color_override)">
+        <material name="grey"/>
+      </xacro:unless>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -410,7 +430,12 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.025"/></geometry>
-      <material name="grey"/>
+      <xacro:if value="$(arg visual_color_override)">
+        <material name="visual_color_override"/>
+      </xacro:if>
+      <xacro:unless value="$(arg visual_color_override)">
+        <material name="grey"/>
+      </xacro:unless>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -511,7 +536,12 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><sphere radius="0.025"/></geometry>
-      <material name="grey"/>
+      <xacro:if value="$(arg visual_color_override)">
+        <material name="visual_color_override"/>
+      </xacro:if>
+      <xacro:unless value="$(arg visual_color_override)">
+        <material name="grey"/>
+      </xacro:unless>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>

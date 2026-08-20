@@ -57,7 +57,7 @@ Quattro는 `JointTrajectoryController`가 시간 기반 궤적을 만들고 GDS6
 
 ## `gait_visualization.launch.py` / `remote_visualization.launch.py`
 
-두 launch 모두 실제 CAN/모터 없이 `robot_state_publisher` + `gait_controller`(선택) + `trajectory_to_joint_state.py`(`quattro_description`) + RViz만 실행해 IK/gait 출력이나 실기 목표 자세를 확인한다. `remote_visualization.launch.py`는 `target/` frame prefix로 실제 로봇과 겹치지 않게 원격 표시한다.
+두 launch 모두 시각화 프로세스 자체는 CAN/모터에 접근하지 않고 `robot_state_publisher` + `gait_controller`(선택) + `trajectory_to_joint_state.py`(`quattro_description`) + RViz로 IK/gait 출력이나 실기 상태를 확인한다. `remote_visualization.launch.py`는 `/joint_states`의 실제 엔코더 자세를 검정색 `JointStale`, trajectory 명령 자세를 주황색 `JointAngle` STL 모델로 같은 위치에 겹쳐 표시한다. 각 RViz RobotModel의 `Collision Enabled`를 켜면 해당 자세의 primitive 충돌 범위를 추가로 표시할 수 있다.
 
 ## 실행 후 확인
 

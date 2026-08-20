@@ -25,6 +25,7 @@ src/quattro_description/
 | `simulation` | `false` | `true`면 `gz_ros2_control/GazeboSimSystem`, `false`면 `quattro_hardware/QuattroSystem` |
 | `apply_position_gains`, `position_gain`, `velocity_gain`, `velocity_integrator_gain` | `false`, `0.0`×3 | GDS68 runtime position/velocity gain을 configure 단계에서 덮어쓸지 여부 |
 | `motor_activation_interval_ms` | `100` | 모터 순차 활성화 안정화 간격 |
+| `visual_color_override`, `visual_color` | `false`, `0.1 0.1 0.1 1.0` | 비교 시각화에서 모든 STL의 재질 색상을 단일 RGBA로 덮어쓰기 |
 | `simulation_controllers` | `../../quattro_gazebo/config/gazebo_controllers.yaml` | Gazebo `ros2_control` 플러그인에 전달되는 controller yaml 경로 |
 
 **`quattro_hardware_joint` 매크로**: joint당 `position` command interface 하나와 `position`/`velocity`/`effort` state interface 3개를 선언한다. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정), `current_limit`을 넘긴다 — 이 값들은 `quattro_hardware/QuattroSystem` 구현이 소비하는 계약이다(`docs/packages/quattro_hardware.md` 참고).
@@ -51,7 +52,7 @@ check_urdf /tmp/quattro.urdf
 
 ## `trajectory_to_joint_state.py`
 
-`<controller>/joint_trajectory`를 구독해 **마지막 포인트의 목표 위치**를 그대로 `sensor_msgs/JointState`로 재발행하는 시각화 전용 노드(`quattro_bringup/gait_visualization.launch.py`, `remote_visualization.launch.py`에서 사용). 실제 하드웨어 feedback이 아니므로 노드 시작 시 경고 로그를 남긴다. 이름/위치 개수 불일치, 비유한(non-finite) 값이 있는 trajectory는 무시한다.
+`<controller>/joint_trajectory`를 구독해 **마지막 포인트의 목표 위치**를 그대로 `sensor_msgs/JointState`로 재발행하는 시각화 전용 노드(`quattro_bringup/gait_visualization.launch.py`, `remote_visualization.launch.py`에서 사용). 실제 하드웨어 feedback이 아니므로 노드 시작 시 경고 로그를 남긴다. 이름/위치 개수 불일치, 비유한(non-finite) 값이 있는 trajectory는 무시한다. 원격 비교 RViz에서는 이 값을 주황색 `JointAngle` STL 모델로 표시한다.
 
 ## 좌표계와 이름 규칙
 
