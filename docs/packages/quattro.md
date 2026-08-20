@@ -52,9 +52,7 @@ src/quattro/quattro/
 | `gait/clearance_height`, `gait/penetration_depth`, `gait/swing_duration` | `std_msgs/Float64` | 실행 중 gait 파라미터 조정(검증 실패 시 로그만 남기고 무시) |
 | `contacts/<leg>` (4개) | `std_msgs/Bool` | 다리별 접지 상태(현재 실제 센서 미연결, 기본 `False`) |
 
-**발행**: `<trajectory_controller_name>/joint_trajectory` (기본 `joint_trajectory_controller/joint_trajectory`, `hardware_control_method=mit`이면 launch에서 `mit_trajectory_controller/joint_trajectory`로 재지정). 정상 gait 주기(초기 자세 전환이 아닌) 포인트는 `positions`와 함께 `velocities`도 채운다 — `q_des = IK(p_des)`, `qd_des = QuadrupedKinematics.joint_velocities(rpy, q_des, v_des)`(`v_des`는 `GaitGenerator.update_states`의 analytic foot velocity). 초기 자세(staged 포함) 전환 포인트는 이전과 동일하게 `positions`만 채운다(foot velocity 목표가 없는 순수 자세 이동이므로).
-
-**추가 발행**: `swing/<leg>` (4개, `std_msgs/Bool`) — 매 제어 주기 `GaitGenerator.update_states()`가 계산한 각 다리의 `in_swing`을 그대로 발행한다. `gait_enabled` 여부와 무관하게 항상 발행된다(정지 상태에서는 모든 다리가 `False`로 잘 정의됨). `quattro_core_ros/gain_scheduler_node`가 이 토픽을 구독해 MIT swing/stance joint gain을 전환한다(`docs/packages/quattro_core_ros.md`, `docs/control/gain_tuning.md`).
+**발행**: `<trajectory_controller_name>/joint_trajectory` (기본 `joint_trajectory_controller/joint_trajectory`). 매 제어 주기 `GaitGenerator.update`가 계산한 발끝 목표 위치를 IK로 관절 각도(`q_des = IK(p_des)`)로 변환해 `positions`만 채운 `JointTrajectory`를 발행한다(속도 feed-forward 없이 순수 위치 제어).
 
 **서비스**: `gait/enable` (`std_srvs/SetBool`, stepping ↔ 정지-시야 전환), `balance/enable` (`std_srvs/SetBool`, IMU PID on/off).
 

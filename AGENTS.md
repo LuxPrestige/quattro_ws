@@ -13,7 +13,7 @@
 - SBC: Raspberry Pi 5
 - 액추에이터: SteadyWin GIM6010-8 × 12
 - 드라이버: GDS68
-- 모터 통신: Linux SocketCAN / CAN Simple / Direct Position·Velocity·Torque / MIT Control
+- 모터 통신: Linux SocketCAN / CAN Simple / Direct Position
 - 기본 CAN bitrate: `500000`
 - IMU: BNO085
 - 시뮬레이션: Gazebo Harmonic + `gz_ros2_control`
@@ -41,13 +41,10 @@
 | `quattro_description` | URDF/Xacro, mesh, TF, inertial/collision, `ros2_control` description | 제어 알고리즘, 드라이버 구현 |
 | `quattro_bringup` | launch, controller 구성, 실제 시스템 실행 조합 | 드라이버·알고리즘 구현 |
 | `quattro_gazebo` | Gazebo world, simulation launch, simulation controller | 실제 하드웨어 제어 |
-| `quattro_controllers` | MIT 5-interface(`position/velocity/kp/kd/effort`)를 모두 claim하는 `ros2_control` 컨트롤러(`MitTrajectoryController`) | raw CAN, GDS68 패킷, joint 좌표 변환 |
-| `quattro_hardware` | `hardware_interface::SystemInterface` 구현(`QuattroSystem`), joint direction/offset/limit 변환, 활성화 안전 절차 | raw CAN payload 직접 생성, gait/IK |
-| `gim6010_driver` | SocketCAN 송수신, CAN Simple/MIT encode·decode, GIM6010 모터 상태 추상화 | Quattro joint 이름, URDF, ROS 의존 |
+| `quattro_hardware` | `hardware_interface::SystemInterface` 구현(`QuattroSystem`, Direct Position 제어), joint direction/offset/limit 변환, 활성화 안전 절차 | raw CAN payload 직접 생성, gait/IK |
+| `gim6010_driver` | SocketCAN 송수신, CAN Simple/MIT encode·decode, GIM6010 모터 상태 추상화. MIT encode/decode는 `calibration_gui`의 관절 영점 조깅 절차가 사용한다 | Quattro joint 이름, URDF, ROS 의존 |
 | `quattro_sensors` | BNO085 등 센서 취득과 표준 ROS 메시지 발행 | balance 제어 |
 | `quattro_teleop` | joystick/keyboard 입력과 상위 명령 생성 | 모터 직접 제어 |
-| `quattro_core` | ROS 비의존 C++ 사족보행 제어 core(kinematics/Jacobian/trajectory/leg controller/state estimation core/balance/FSM/gain profile) | raw CAN, ROS 노드/메시지 |
-| `quattro_core_ros` | `quattro_core`를 ROS에 연결하는 노드(`gain_scheduler_node`: swing/stance gain을 `MitTrajectoryController`에 전달) | raw CAN, gim6010_driver/quattro_hardware 의존 |
 
 `gim6010_driver`, `quattro_hardware` 모두 구현됨(`docs/packages/gim6010_driver.md`, `docs/packages/quattro_hardware.md`). `quattro_hardware`는 `gim6010_driver`를 라이브러리로 직접 링크하는 `QuattroSystem`(`hardware_interface::SystemInterface`)과 `calibration_gui`로 구성된다.
 
@@ -115,7 +112,7 @@ colcon build --symlink-install --event-handlers console_direct+
 |---|---|
 | 문서 전체 색인 | `docs/README.md` |
 | 패키지 구조, ROS 인터페이스, 좌표계·이름 규칙 | `docs/architecture.md` |
-| 패키지별 세부 구현(11개 패키지 모두 구현됨) | `docs/packages/*.md` |
+| 패키지별 세부 구현(8개 패키지 모두 구현됨) | `docs/packages/*.md` |
 | Docker, X11, GPU, 빌드, Git 개발 환경 | `docs/development_environment.md` |
 | Gazebo 시뮬레이션 | `docs/gazebo.md` |
 | GIM6010-8 / GDS68 / CAN / ros2_control 하드웨어 구조 | `docs/packages/gim6010_driver.md`, `docs/packages/quattro_hardware.md`(모두 구현됨, 실기 미검증) |
@@ -124,7 +121,5 @@ colcon build --symlink-install --event-handlers console_direct+
 | 구현 상태와 다음 작업 | `docs/development_status.md` |
 | 제조사 번역 매뉴얼 | `docs/GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` |
 | gim6010_driver/quattro_hardware 재설계 시 참고한 레퍼런스 프로젝트 | `docs/ros_odrive/`, `docs/Steadywin-RS485-CAN-Connector/` (의존성 아님, 아키텍처 참고용) |
-| Cheetah-Software 대비 설계 근거(quattro/quattro_core) | `docs/references/cheetah_software.md` |
-| Kp/Kd gain 구조, tuning 절차 | `docs/control/gain_tuning.md` |
 
 문서 내용과 코드가 충돌하면 **현재 코드와 실제 하드웨어 사양을 확인한 뒤 문서도 함께 수정**한다.

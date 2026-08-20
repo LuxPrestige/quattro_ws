@@ -11,12 +11,10 @@ src/
 ├── quattro/
 ├── quattro_description/
 ├── quattro_bringup/
-├── quattro_controllers/
 ├── quattro_gazebo/
 ├── quattro_hardware/    # 구현됨, docs/packages/quattro_hardware.md 참고
 ├── quattro_sensors/
 ├── quattro_teleop/
-├── quattro_core/         # ROS 비의존 C++ 제어 core, docs/packages/quattro_core.md 참고
 └── gim6010_driver/       # 구현됨, docs/packages/gim6010_driver.md 참고
 ```
 
@@ -74,12 +72,6 @@ Gazebo Harmonic 시뮬레이션.
 
 실제 하드웨어 제어를 포함하지 않는다.
 
-### `quattro_controllers`
-
-Quattro 전용 `ros2_control` 컨트롤러 플러그인(C++). MIT command mode가 요구하는 `position/velocity/kp/kd/effort` 5개 command interface를 관절마다 동시에 claim하는 `MitTrajectoryController`를 제공한다. 표준 `joint_trajectory_controller`는 관절당 `position` 하나만 다루므로 MIT 모드에 쓸 수 없어 이 패키지가 별도로 필요하다.
-
-raw CAN, GDS68 패킷, joint 좌표 변환(direction/offset)은 이 패키지에서 다루지 않는다.
-
 ### `gim6010_driver`
 
 GIM6010-8 + GDS68 전용 저수준 C++ 드라이버. **구현됨.**
@@ -105,10 +97,6 @@ BNO085 등 센서 취득 계층.
 Switch Pro Controller와 keyboard 입력을 상위 ROS 명령으로 변환한다.
 
 모터를 직접 제어하지 않는다.
-
-### `quattro_core`
-
-Cheetah-Software 스타일 사족보행 제어 구조를 Quattro에 맞게 재구현하는 ROS 비의존 C++ 라이브러리(`ament_cmake`, C++17). kinematics/Jacobian, foot trajectory, leg controller, state estimation core, balance controller, control FSM을 다루며, ROS 메시지·노드·raw CAN에 의존하지 않는다. 상세는 `docs/packages/quattro_core.md`, Cheetah-Software 대비표는 `docs/references/cheetah_software.md`.
 
 ## 3. 의존 방향
 

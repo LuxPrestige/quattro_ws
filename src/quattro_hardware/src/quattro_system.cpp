@@ -108,9 +108,7 @@ hardware_interface::CallbackReturn QuattroSystem::on_init(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
-  RCLCPP_INFO(
-    get_logger(), "QuattroSystem initialized: %zu joints, control_method_index=%d",
-    joints_.size(), static_cast<int>(control_method_));
+  RCLCPP_INFO(get_logger(), "QuattroSystem initialized: %zu joints", joints_.size());
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -118,25 +116,6 @@ bool QuattroSystem::parse_hardware_parameters()
 {
   const auto & params = info_.hardware_parameters;
   const auto & logger = get_logger();
-
-  std::string control_method_text;
-  if (!get_required(params, "control_method", control_method_text, logger)) {
-    return false;
-  }
-  if (control_method_text == "direct_position") {
-    control_method_ = ControlMethod::kDirectPosition;
-  } else if (control_method_text == "direct_velocity") {
-    control_method_ = ControlMethod::kDirectVelocity;
-  } else if (control_method_text == "direct_torque") {
-    control_method_ = ControlMethod::kDirectTorque;
-  } else if (control_method_text == "mit") {
-    control_method_ = ControlMethod::kMit;
-  } else {
-    RCLCPP_ERROR(
-      logger, "Unknown control_method '%s' (expected direct_position/direct_velocity/"
-      "direct_torque/mit)", control_method_text.c_str());
-    return false;
-  }
 
   bool ok = true;
   ok = parse_bool_param(params, "apply_position_gains", apply_position_gains_, logger) && ok;
@@ -155,7 +134,6 @@ bool QuattroSystem::parse_hardware_parameters()
   ok = parse_double_param(params, "rotor_velocity_limit_rev_s", rotor_velocity_limit_rev_s_, logger) &&
     ok;
   ok = parse_double_param(params, "motor_current_limit_a", motor_current_limit_a_, logger) && ok;
-  ok = parse_ms_param(params, "engagement_duration_ms", engagement_duration_, logger) && ok;
   ok = parse_ms_param(params, "telemetry_period_ms", telemetry_period_, logger) && ok;
 
   if (!ok) {
@@ -244,23 +222,6 @@ bool QuattroSystem::parse_joints()
       return false;
     }
 
-    if (control_method_ == ControlMethod::kMit) {
-      if (!parse_double_param(params, "mit_kp", joint.mit_kp, logger) ||
-        !parse_double_param(params, "mit_kd", joint.mit_kd, logger))
-      {
-        return false;
-      }
-      if (joint.mit_kp < 0.0 || joint.mit_kp > gim6010_driver::kMitKpMax ||
-        joint.mit_kd < 0.0 || joint.mit_kd > gim6010_driver::kMitKdMax)
-      {
-        RCLCPP_ERROR(
-          logger, "Joint '%s' mit_kp/mit_kd (%f/%f) is outside the GIM6010 MIT range "
-          "([0,%f]/[0,%f])", joint.name.c_str(), joint.mit_kp, joint.mit_kd,
-          gim6010_driver::kMitKpMax, gim6010_driver::kMitKdMax);
-        return false;
-      }
-    }
-
     joints_.push_back(std::move(joint));
   }
 
@@ -275,23 +236,7 @@ bool QuattroSystem::validate_interfaces() const
 {
   const auto & logger = get_logger();
 
-  std::vector<std::string> expected_command;
-  switch (control_method_) {
-    case ControlMethod::kDirectPosition:
-      expected_command = {hardware_interface::HW_IF_POSITION};
-      break;
-    case ControlMethod::kDirectVelocity:
-      expected_command = {hardware_interface::HW_IF_VELOCITY};
-      break;
-    case ControlMethod::kDirectTorque:
-      expected_command = {hardware_interface::HW_IF_EFFORT};
-      break;
-    case ControlMethod::kMit:
-      expected_command = {
-        hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY, "kp", "kd",
-        hardware_interface::HW_IF_EFFORT};
-      break;
-  }
+  const std::vector<std::string> expected_command = {hardware_interface::HW_IF_POSITION};
   const std::vector<std::string> expected_state = {
     hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
     hardware_interface::HW_IF_EFFORT};
@@ -299,8 +244,8 @@ bool QuattroSystem::validate_interfaces() const
   for (const auto & joint_info : info_.joints) {
     if (joint_info.command_interfaces.size() != expected_command.size()) {
       RCLCPP_ERROR(
-        logger, "Joint '%s' has %zu command interfaces, expected exactly %zu for this "
-        "control_method", joint_info.name.c_str(), joint_info.command_interfaces.size(),
+        logger, "Joint '%s' has %zu command interfaces, expected exactly %zu",
+        joint_info.name.c_str(), joint_info.command_interfaces.size(),
         expected_command.size());
       return false;
     }
@@ -487,26 +432,8 @@ bool QuattroSystem::activate_joint(const JointContext & joint)
   }
   const double current_joint_rad = motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
 
-  gim6010_driver::ControlMode control_mode{};
-  gim6010_driver::InputMode input_mode{};
-  switch (control_method_) {
-    case ControlMethod::kDirectPosition:
-      control_mode = gim6010_driver::ControlMode::kPositionControl;
-      input_mode = gim6010_driver::InputMode::kDirect;
-      break;
-    case ControlMethod::kDirectVelocity:
-      control_mode = gim6010_driver::ControlMode::kVelocityControl;
-      input_mode = gim6010_driver::InputMode::kDirect;
-      break;
-    case ControlMethod::kDirectTorque:
-      control_mode = gim6010_driver::ControlMode::kTorqueControl;
-      input_mode = gim6010_driver::InputMode::kDirect;
-      break;
-    case ControlMethod::kMit:
-      control_mode = gim6010_driver::ControlMode::kPositionControl;
-      input_mode = gim6010_driver::InputMode::kMitMotionControl;
-      break;
-  }
+  constexpr auto control_mode = gim6010_driver::ControlMode::kPositionControl;
+  constexpr auto input_mode = gim6010_driver::InputMode::kDirect;
 
   if (!motor_manager_->send_set_controller_mode(joint.node_id, control_mode, input_mode)) {
     RCLCPP_ERROR(logger, "Failed to set controller mode for joint '%s'", joint.name.c_str());
@@ -520,49 +447,12 @@ bool QuattroSystem::activate_joint(const JointContext & joint)
     return false;
   }
 
-  if (control_method_ == ControlMethod::kMit) {
-    // Ramp Kp/Kd from 0 up to the configured hold gains over
-    // engagement_duration_ so closed-loop engagement doesn't snap the joint
-    // into a stiff hold instantaneously.
-    const auto ramp_start = std::chrono::steady_clock::now();
-    while (true) {
-      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - ramp_start).count();
-      const double fraction = engagement_duration_.count() <= 0
-        ? 1.0
-        : std::clamp(
-          static_cast<double>(elapsed_ms) / static_cast<double>(engagement_duration_.count()), 0.0,
-          1.0);
-
-      gim6010_driver::MitCommand command;
-      command.position_rad = joint_rad_to_mit_output_rad(current_joint_rad, joint.calibration);
-      command.velocity_rad_s = 0.0;
-      command.kp = joint.mit_kp * fraction;
-      command.kd = joint.mit_kd * fraction;
-      command.torque_Nm = 0.0;
-      if (!motor_manager_->send_mit_command(joint.node_id, command)) {
-        RCLCPP_ERROR(logger, "Joint '%s' rejected MIT engagement command", joint.name.c_str());
-        return false;
-      }
-      motor_manager_->poll();
-
-      if (fraction >= 1.0) {
-        break;
-      }
-      std::this_thread::sleep_for(kPollInterval);
-    }
-  } else if (control_method_ == ControlMethod::kDirectPosition) {
-    gim6010_driver::SetInputPosCommand command;
-    command.position_rev = static_cast<float>(joint_rad_to_motor_rev(current_joint_rad, joint.calibration));
-    const auto frame = motor_manager_->send_set_input_pos(joint.node_id, command);
-    if (!frame) {
-      RCLCPP_ERROR(logger, "Joint '%s' rejected initial hold position", joint.name.c_str());
-      return false;
-    }
-  } else if (control_method_ == ControlMethod::kDirectVelocity) {
-    motor_manager_->send_set_input_vel(joint.node_id, 0.0F, 0.0F);
-  } else {
-    motor_manager_->send_set_input_torque(joint.node_id, 0.0F);
+  gim6010_driver::SetInputPosCommand command;
+  command.position_rev = static_cast<float>(joint_rad_to_motor_rev(current_joint_rad, joint.calibration));
+  const auto frame = motor_manager_->send_set_input_pos(joint.node_id, command);
+  if (!frame) {
+    RCLCPP_ERROR(logger, "Joint '%s' rejected initial hold position", joint.name.c_str());
+    return false;
   }
 
   // Stability check: hold for motor_activation_interval_ and confirm no
@@ -666,22 +556,12 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
     double effort_Nm = std::numeric_limits<double>::quiet_NaN();
 
     if (motor != nullptr) {
-      if (control_method_ == ControlMethod::kMit) {
-        if (const auto feedback = motor->last_mit_feedback()) {
-          position_rad = mit_output_rad_to_joint_rad(feedback->position_rad, joint.calibration);
-          velocity_rad_s =
-            mit_output_rad_s_to_joint_rad_s(feedback->velocity_rad_s, joint.calibration);
-          effort_Nm = mit_output_Nm_to_joint_Nm(feedback->torque_Nm, joint.calibration);
-        }
-      } else {
-        if (const auto estimate = motor->last_encoder_estimate()) {
-          position_rad = motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
-          velocity_rad_s = motor_rev_s_to_joint_rad_s(estimate->velocity_rev_s, joint.calibration);
-        }
-        // effort_Nm stays NaN for direct_position/velocity/torque: no
-        // measured-torque path is wired in for Direct modes yet
-        // (docs/packages/quattro_hardware.md section 3).
+      if (const auto estimate = motor->last_encoder_estimate()) {
+        position_rad = motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
+        velocity_rad_s = motor_rev_s_to_joint_rad_s(estimate->velocity_rev_s, joint.calibration);
       }
+      // effort_Nm stays NaN: no measured-torque path is wired in for
+      // Direct Position mode (docs/packages/quattro_hardware.md section 3).
     }
 
     set_state<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION, position_rad);
@@ -743,61 +623,13 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
 
   bool any_rejected = false;
   for (const auto & joint : joints_) {
-    switch (control_method_) {
-      case ControlMethod::kDirectPosition: {
-        const double joint_rad = get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
-        gim6010_driver::SetInputPosCommand command;
-        command.position_rev =
-          static_cast<float>(joint_rad_to_motor_rev(joint_rad, joint.calibration));
-        if (!motor_manager_->send_set_input_pos(joint.node_id, command)) {
-          RCLCPP_ERROR(get_logger(), "Joint '%s': position command rejected", joint.name.c_str());
-          any_rejected = true;
-        }
-        break;
-      }
-      case ControlMethod::kDirectVelocity: {
-        const double joint_rad_s =
-          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_VELOCITY);
-        const float motor_rev_s =
-          static_cast<float>(joint_rad_s_to_motor_rev_s(joint_rad_s, joint.calibration));
-        if (!motor_manager_->send_set_input_vel(joint.node_id, motor_rev_s, 0.0F)) {
-          RCLCPP_ERROR(get_logger(), "Joint '%s': velocity command rejected", joint.name.c_str());
-          any_rejected = true;
-        }
-        break;
-      }
-      case ControlMethod::kDirectTorque: {
-        const double joint_Nm =
-          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_EFFORT);
-        const float motor_Nm = static_cast<float>(joint_Nm_to_motor_Nm(joint_Nm, joint.calibration));
-        if (!motor_manager_->send_set_input_torque(joint.node_id, motor_Nm)) {
-          RCLCPP_ERROR(get_logger(), "Joint '%s': torque command rejected", joint.name.c_str());
-          any_rejected = true;
-        }
-        break;
-      }
-      case ControlMethod::kMit: {
-        const double joint_position =
-          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
-        const double joint_velocity =
-          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_VELOCITY);
-        const double joint_effort =
-          get_command<double>(joint.name + "/" + hardware_interface::HW_IF_EFFORT);
-        gim6010_driver::MitCommand command;
-        command.position_rad = joint_rad_to_mit_output_rad(joint_position, joint.calibration);
-        command.velocity_rad_s =
-          joint_rad_s_to_mit_output_rad_s(joint_velocity, joint.calibration);
-        command.kp = get_command<double>(joint.name + "/kp");
-        command.kd = get_command<double>(joint.name + "/kd");
-        command.torque_Nm = joint_Nm_to_mit_output_Nm(joint_effort, joint.calibration);
-        if (!motor_manager_->send_mit_command(joint.node_id, command)) {
-          RCLCPP_ERROR(
-            get_logger(), "Joint '%s': MIT command outside protocol range, rejected -- not "
-            "clamping", joint.name.c_str());
-          any_rejected = true;
-        }
-        break;
-      }
+    const double joint_rad = get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
+    gim6010_driver::SetInputPosCommand command;
+    command.position_rev =
+      static_cast<float>(joint_rad_to_motor_rev(joint_rad, joint.calibration));
+    if (!motor_manager_->send_set_input_pos(joint.node_id, command)) {
+      RCLCPP_ERROR(get_logger(), "Joint '%s': position command rejected", joint.name.c_str());
+      any_rejected = true;
     }
   }
 

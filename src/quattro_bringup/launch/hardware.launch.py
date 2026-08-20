@@ -15,47 +15,10 @@ from launch.substitutions import (
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
-    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-import yaml
-
-# Must match the `joints:` order in quattro_bringup/config/hardware_controllers_mit.yaml.
-_JOINT_ORDER = [
-    'front_left_hip_joint', 'front_left_upper_leg_joint', 'front_left_lower_leg_joint',
-    'front_right_hip_joint', 'front_right_upper_leg_joint', 'front_right_lower_leg_joint',
-    'back_left_hip_joint', 'back_left_upper_leg_joint', 'back_left_lower_leg_joint',
-    'back_right_hip_joint', 'back_right_upper_leg_joint', 'back_right_lower_leg_joint',
-]
-# Used only if calibration.yaml cannot be read; matches the previous static
-# defaults in hardware_controllers_mit.yaml so a missing/unreadable file
-# never silently blocks bringup.
-_FALLBACK_MIT_KP = 60.0
-_FALLBACK_MIT_KD = 0.8
-
-
-def _mit_gains_from_calibration(calibration_path: str) -> dict:
-    """
-    Read per-joint MIT kp/kd from calibration.yaml.
-
-    calibration.yaml is the single source of truth for MIT gains: the same
-    per-joint kp/kd feed QuattroSystem's activation gain-ramp through the
-    URDF (see quattro_description/urdf/quattro.urdf.xacro). Sourcing
-    mit_trajectory_controller's steady-state gains from the same file avoids
-    a gain discontinuity the moment control hands off from the hardware
-    layer to the controller after activation.
-    """
-    try:
-        with open(calibration_path, 'r', encoding='utf-8') as calibration_stream:
-            joints = yaml.safe_load(calibration_stream)['joints']
-        kp = [float(joints[name]['kp']) for name in _JOINT_ORDER]
-        kd = [float(joints[name]['kd']) for name in _JOINT_ORDER]
-    except (OSError, KeyError, TypeError, ValueError):
-        kp = [_FALLBACK_MIT_KP] * len(_JOINT_ORDER)
-        kd = [_FALLBACK_MIT_KD] * len(_JOINT_ORDER)
-    return {'kp': kp, 'kd': kd}
 
 
 def launch_setup(context, *args, **kwargs):
@@ -67,9 +30,6 @@ def launch_setup(context, *args, **kwargs):
     initial_pose_duration = LaunchConfiguration('initial_pose_duration')
     calibration_file = LaunchConfiguration('calibration_file')
     controller_file = LaunchConfiguration('controller_file')
-    hardware_control_method = LaunchConfiguration('hardware_control_method')
-    command_controller_name = LaunchConfiguration('command_controller_name')
-    use_gain_scheduler = LaunchConfiguration('use_gain_scheduler')
     apply_position_gains = LaunchConfiguration('apply_position_gains')
     position_gain = LaunchConfiguration('position_gain')
     velocity_gain = LaunchConfiguration('velocity_gain')
@@ -87,8 +47,6 @@ def launch_setup(context, *args, **kwargs):
         FindPackageShare('quattro_sensors'), 'config', 'bno085.yaml'])
     teleop_parameters = PathJoinSubstitution([
         FindPackageShare('quattro_teleop'), 'config', 'switch_pro.yaml'])
-    gain_scheduler_parameters = PathJoinSubstitution([
-        FindPackageShare('quattro_bringup'), 'config', 'gain_scheduler.yaml'])
 
     robot_description = {
         'robot_description': ParameterValue(
@@ -96,7 +54,6 @@ def launch_setup(context, *args, **kwargs):
                 FindExecutable(name='xacro'), ' ', xacro_file,
                 ' simulation:=false',
                 ' calibration_file:=', calibration_file,
-                ' hardware_control_method:=', hardware_control_method,
                 ' apply_position_gains:=', apply_position_gains,
                 ' position_gain:=', position_gain,
                 ' velocity_gain:=', velocity_gain,
@@ -105,14 +62,6 @@ def launch_setup(context, *args, **kwargs):
             ]),
             value_type=str,
         )
-    }
-    # Only takes effect while mit_trajectory_controller is actually loaded by
-    # controller_file; harmless otherwise.
-    mit_gain_overrides = {
-        'mit_trajectory_controller': {
-            'ros__parameters': _mit_gains_from_calibration(
-                context.perform_substitution(calibration_file)),
-        },
     }
 
     robot_state_publisher = Node(
@@ -128,7 +77,6 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             controller_file,
-            mit_gain_overrides,
             {'update_rate': 100, 'use_sim_time': False},
         ],
     )
@@ -158,7 +106,7 @@ def launch_setup(context, *args, **kwargs):
         package='controller_manager',
         executable='spawner',
         arguments=[
-            command_controller_name,
+            'joint_trajectory_controller',
             '--controller-manager', '/controller_manager',
             '--controller-manager-timeout', '30',
             '--switch-timeout', '30',
@@ -175,7 +123,7 @@ def launch_setup(context, *args, **kwargs):
                 'control_frequency': 100.0,
                 'start_enabled': ParameterValue(
                     start_gait_enabled, value_type=bool),
-                'trajectory_controller_name': command_controller_name,
+                'trajectory_controller_name': 'joint_trajectory_controller',
                 'initial_pose_duration': ParameterValue(
                     initial_pose_duration, value_type=float),
                 'staged_initial_pose': ParameterValue(
@@ -183,23 +131,6 @@ def launch_setup(context, *args, **kwargs):
                 'use_sim_time': False,
             },
         ],
-        condition=IfCondition(PythonExpression([
-            "'", hardware_control_method,
-            "' in ('direct_position', 'mit')",
-        ])),
-    )
-    gain_scheduler = Node(
-        package='quattro_core_ros',
-        executable='gain_scheduler_node',
-        output='screen',
-        parameters=[
-            gain_scheduler_parameters,
-            {'target_controller_node': command_controller_name, 'use_sim_time': False},
-        ],
-        condition=IfCondition(PythonExpression([
-            "'", hardware_control_method, "' == 'mit' and '",
-            use_gain_scheduler, "' == 'true'",
-        ])),
     )
     imu = Node(
         package='quattro_sensors',
@@ -246,7 +177,7 @@ def launch_setup(context, *args, **kwargs):
         if event.returncode != 0:
             return [EmitEvent(event=Shutdown(
                 reason='command controller failed to start'))]
-        return [gait_controller, gain_scheduler]
+        return [gait_controller]
 
     start_gait_controller = RegisterEventHandler(
         OnProcessExit(
@@ -286,12 +217,6 @@ def generate_launch_description() -> LaunchDescription:
                 bringup_share, 'config', 'calibration.yaml']),
             description='Machine-specific motor calibration YAML.'),
         DeclareLaunchArgument(
-            'hardware_control_method', default_value='mit',
-            description=(
-                'GDS68 control method: direct_position, direct_velocity, '
-                'direct_torque, or mit. The controller file must use the '
-                'matching command interface.')),
-        DeclareLaunchArgument(
             'apply_position_gains', default_value='false',
             description=(
                 'Write runtime GDS68 position/velocity gains during configure. '
@@ -311,13 +236,9 @@ def generate_launch_description() -> LaunchDescription:
                 'Delay after each motor reaches closed-loop control before '
                 'activating the next motor.')),
         DeclareLaunchArgument(
-            'command_controller_name',
-            default_value='mit_trajectory_controller',
-            description='Controller name present in controller_file.'),
-        DeclareLaunchArgument(
             'controller_file',
             default_value=PathJoinSubstitution([
-                bringup_share, 'config', 'hardware_controllers_mit.yaml']),
+                bringup_share, 'config', 'hardware_controllers.yaml']),
             description='ros2_control controller configuration.'),
         DeclareLaunchArgument(
             'initial_pose_duration', default_value='5.0',
@@ -338,12 +259,5 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'use_teleop', default_value='true',
             description='Start joystick input and Quattro teleoperation.'),
-        DeclareLaunchArgument(
-            'use_gain_scheduler', default_value='true',
-            description=(
-                'Start quattro_core_ros/gain_scheduler_node when '
-                'hardware_control_method=mit, switching MIT joint gain '
-                'between swing/stance profiles (docs/control/'
-                'gain_tuning.md). Ignored otherwise.')),
         OpaqueFunction(function=launch_setup),
     ])

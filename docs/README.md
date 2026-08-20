@@ -16,15 +16,12 @@
 | 패키지 | 문서 |
 |---|---|
 | `quattro` (FK/IK, gait, gait_controller) | [`packages/quattro.md`](packages/quattro.md) |
-| `quattro_core` (ROS 비의존 C++ 사족보행 제어 core) | [`packages/quattro_core.md`](packages/quattro_core.md) |
-| `quattro_core_ros` (`quattro_core`를 ROS에 연결하는 노드, `gain_scheduler_node`) | [`packages/quattro_core_ros.md`](packages/quattro_core_ros.md) |
 | `quattro_description` (URDF/Xacro, mesh, RViz) | [`packages/quattro_description.md`](packages/quattro_description.md) |
 | `quattro_bringup` (실기 launch, controller 구성) | [`packages/quattro_bringup.md`](packages/quattro_bringup.md) |
-| `quattro_controllers` (`MitTrajectoryController`) | [`packages/quattro_controllers.md`](packages/quattro_controllers.md) |
 | `quattro_gazebo` (Gazebo Harmonic 시뮬레이션) | [`packages/quattro_gazebo.md`](packages/quattro_gazebo.md) |
 | `quattro_sensors` (BNO085 IMU) | [`packages/quattro_sensors.md`](packages/quattro_sensors.md) |
 | `quattro_teleop` (joystick/keyboard teleop) | [`packages/quattro_teleop.md`](packages/quattro_teleop.md) |
-| `gim6010_driver` (CAN 드라이버, CAN Simple + MIT 전체) | [`packages/gim6010_driver.md`](packages/gim6010_driver.md) |
+| `gim6010_driver` (CAN 드라이버) | [`packages/gim6010_driver.md`](packages/gim6010_driver.md) |
 | `quattro_hardware` (`ros2_control` 하드웨어 계층, `QuattroSystem`) | [`packages/quattro_hardware.md`](packages/quattro_hardware.md) |
 
 ## 실행 환경
@@ -37,19 +34,12 @@
 
 ## 하드웨어 참고 자료 (GIM6010-8 / GDS68)
 
-CAN/MIT 프로토콜은 `packages/gim6010_driver.md`, 안전 정책·활성화 절차는 `packages/quattro_hardware.md`, 실행 절차는 `packages/quattro_bringup.md`가 1차 출처다. 아래는 그 문서들의 근거 자료.
+CAN 프로토콜은 `packages/gim6010_driver.md`, 안전 정책·활성화 절차는 `packages/quattro_hardware.md`, 실행 절차는 `packages/quattro_bringup.md`가 1차 출처다. 아래는 그 문서들의 근거 자료.
 
 | 자료 | 내용 |
 |---|---|
-| `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` | 제조사 번역 매뉴얼 (CAN Simple/MIT/오류 코드 원본) |
+| `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` | 제조사 번역 매뉴얼 (CAN Simple/오류 코드 원본) |
 | `ros_odrive/`, `Steadywin-RS485-CAN-Connector/` | `gim6010_driver`/`quattro_hardware` 재설계를 위해 아키텍처만 참고한 외부 레퍼런스 프로젝트. 워크스페이스 의존성이 아니다 |
-
-## 상위 제어 구조 참고 자료
-
-| 문서 | 내용 |
-|---|---|
-| [`references/cheetah_software.md`](references/cheetah_software.md) | `quattro`/`quattro_core`의 gait/Jacobian/LegController/FSM/gain 설계가 Cheetah-Software의 어떤 개념을 참고했고 무엇을 가져오지 않았는지 정리 |
-| [`control/gain_tuning.md`](control/gain_tuning.md) | Kp/Kd gain 구조(joint vs Cartesian), GIM6010 MIT gain 대응, 물리 단위, tuning 절차, torque/force safety |
 
 ## 문서 규칙
 

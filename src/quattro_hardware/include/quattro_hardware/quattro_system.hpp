@@ -16,14 +16,6 @@
 namespace quattro_hardware
 {
 
-enum class ControlMethod
-{
-  kDirectPosition,
-  kDirectVelocity,
-  kDirectTorque,
-  kMit,
-};
-
 // hardware_interface::SystemInterface connecting the 12 Quattro joints to
 // real GIM6010-8/GDS68 motors over gim6010_driver. Command/state interface
 // names, per-joint parameters, and hardware parameters are the contract
@@ -55,8 +47,6 @@ private:
     uint8_t node_id{0};
     std::string can_bus;
     double current_limit{5.0};
-    double mit_kp{0.0};
-    double mit_kd{0.0};
   };
 
   bool parse_hardware_parameters();
@@ -68,14 +58,12 @@ private:
   // elapses. Called once at the top of on_activate.
   bool wait_for_fresh_feedback_and_no_faults();
   // Brings a single motor into closed-loop control, holding at its current
-  // measured position (MIT: with a Kp/Kd ramp over engagement_duration_).
-  // Blocks for up to ~engagement_duration_ + motor_activation_interval_.
+  // measured position. Blocks for up to ~motor_activation_interval_.
   bool activate_joint(const JointContext & joint);
   // Idles every configured motor. Safe to call even if some were never
   // activated.
   void safe_stop_all();
 
-  ControlMethod control_method_{ControlMethod::kMit};
   bool apply_position_gains_{false};
   double position_gain_{0.0};
   double velocity_gain_{0.0};
@@ -89,7 +77,6 @@ private:
   std::chrono::milliseconds scheduling_warning_{50};
   double rotor_velocity_limit_rev_s_{5.0};
   double motor_current_limit_a_{5.0};
-  std::chrono::milliseconds engagement_duration_{1000};
   std::chrono::milliseconds telemetry_period_{500};
 
   std::vector<JointContext> joints_;

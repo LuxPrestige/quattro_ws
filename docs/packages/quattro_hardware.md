@@ -20,14 +20,14 @@ src/quattro_hardware/
 ├── package.xml
 ├── quattro_hardware.xml              # pluginlib 플러그인 설명 (hardware_interface::SystemInterface)
 ├── include/quattro_hardware/
-│   ├── joint_transform.hpp           # direction/offset/gear_ratio 변환 + MIT 전용 변환, 순수 함수
+│   ├── joint_transform.hpp           # direction/offset/gear_ratio 변환(+ calibration_gui가 쓰는 MIT 출력축 변환), 순수 함수
 │   └── quattro_system.hpp
 ├── src/
 │   ├── joint_transform.cpp
 │   ├── quattro_system.cpp
 │   └── calibration_gui.cpp           # 실행 파일: 관절 영점 캘리브레이션 GUI (Qt5 + yaml-cpp)
 └── test/
-    ├── test_joint_transform.cpp      # 변환 round-trip, MIT 도메인 경계값 검증
+    ├── test_joint_transform.cpp      # 변환 round-trip, 도메인 경계값 검증
     └── test_pluginlib_export.cpp     # pluginlib이 실제로 QuattroSystem을 로드하는지 검증
 ```
 
@@ -105,7 +105,9 @@ double motor_Nm_to_joint_Nm(double motor_Nm, const JointCalibration &);   // joi
 double joint_Nm_to_motor_Nm(double joint_Nm, const JointCalibration &);   // motor_Nm = direction * joint_Nm / gear_ratio
 
 // MIT(0x08)는 이미 출력축(gear_ratio 반영 완료) 값이라 이 세 쌍은 gear_ratio를 쓰지
-// 않는다 -- direction/offset만 적용한다(3절 "MIT 전용 변환에 주의" 참고).
+// 않는다 -- direction/offset만 적용한다. QuattroSystem은 Direct Position만
+// 쓰므로 이 쌍은 호출하지 않고, calibration_gui의 관절 영점 조깅 절차(5절)가
+// gim6010_driver의 MIT 프레임을 통해 사용한다.
 double mit_output_rad_to_joint_rad(double mit_output_rad, const JointCalibration &);
 double joint_rad_to_mit_output_rad(double joint_rad, const JointCalibration &);
 double mit_output_rad_s_to_joint_rad_s(double mit_output_rad_s, const JointCalibration &);
@@ -114,7 +116,7 @@ double mit_output_Nm_to_joint_Nm(double mit_output_Nm, const JointCalibration &)
 double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ```
 
-토크는 위치/속도와 감속비 방향이 반대다(감속기는 속도를 줄이고 토크를 늘린다) — 이 부호를 헷갈리면 `direct_torque`가 실제 힘의 8배 또는 1/8로 나가므로 `test_joint_transform.cpp`에서 반드시 명시적으로 검증한다. `Set_Limits`의 velocity/current는 모터 rotor 단위(rev/s, A)이므로 `rotor_velocity_limit_rev_s`/`motor_current_limit_a` 파라미터는 변환 없이 그대로 `gim6010_driver`에 전달한다(joint 단위가 아니다).
+`Set_Limits`의 velocity/current는 모터 rotor 단위(rev/s, A)이므로 `rotor_velocity_limit_rev_s`/`motor_current_limit_a` 파라미터는 변환 없이 그대로 `gim6010_driver`에 전달한다(joint 단위가 아니다).
 
 ## 2. `QuattroSystem` — `hardware_interface::SystemInterface`
 
@@ -122,9 +124,9 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 
 이 워크스페이스의 `hardware_interface`(2025년 리팩터링된 `HardwareComponentInterface` API)는 `on_init`이 `HardwareInfo`가 아니라 `HardwareComponentInterfaceParams`(내부에 `hardware_info` 포함)를 받는다. 반드시 `SystemInterface::on_init(params)`(기반 클래스, `info_` 멤버를 채운다)를 먼저 호출한 뒤 자체 파싱을 진행한다.
 
-- `info_.hardware_parameters`에서 하드웨어 전역 파라미터를 읽는다: `control_method`, `apply_position_gains`, `position_gain`/`velocity_gain`/`velocity_integrator_gain`, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `engagement_duration_ms`, `telemetry_period_ms`(전체 목록과 값은 `quattro.urdf.xacro`의 `<ros2_control name="QuattroSystem">` 블록, `docs/packages/quattro_description.md`). 파싱 실패는 각각 로그를 남기고 `on_init`을 실패시킨다(누락된 키, 숫자로 파싱 안 되는 값, 음수 timeout 등).
-- `info_.joints`를 순회하며 관절마다 `can_interface`/`can_id`/`direction`/`offset`/`gear_ratio`/`current_limit`(+`mit`일 때만 `mit_kp`/`mit_kd`)을 읽어 `JointCalibration`과 `MotorRoute`(node_id=`can_id`, bus=`can_interface`)를 구성한다. `direction`은 정확히 `1.0`/`-1.0`만 허용, `can_id`는 `[0, kMaxNodeId]`(`gim6010_driver`), 중복 `can_id`는 거부, `mit_kp`/`mit_kd`는 MIT 프로토콜 범위(`[0,500]`/`[0,5]`) 밖이면 거부한다.
-- `control_method`가 `mit`이면 관절당 command interface 5개(`position`/`velocity`/`kp`/`kd`/`effort`)를, 그 외(`direct_position`/`direct_velocity`/`direct_torque`)면 1개를 기대하고, state interface는 항상 `position`/`velocity`/`effort` 3개를 기대한다. `info_.joints[i]`의 실제 개수/이름이 이와 다르면 `on_init`을 실패시킨다(URDF-하드웨어 파라미터 불일치를 조용히 넘기지 않는다).
+- `info_.hardware_parameters`에서 하드웨어 전역 파라미터를 읽는다: `apply_position_gains`, `position_gain`/`velocity_gain`/`velocity_integrator_gain`, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `telemetry_period_ms`(전체 목록과 값은 `quattro.urdf.xacro`의 `<ros2_control name="QuattroSystem">` 블록, `docs/packages/quattro_description.md`). 파싱 실패는 각각 로그를 남기고 `on_init`을 실패시킨다(누락된 키, 숫자로 파싱 안 되는 값, 음수 timeout 등).
+- `info_.joints`를 순회하며 관절마다 `can_interface`/`can_id`/`direction`/`offset`/`gear_ratio`/`current_limit`을 읽어 `JointCalibration`과 `MotorRoute`(node_id=`can_id`, bus=`can_interface`)를 구성한다. `direction`은 정확히 `1.0`/`-1.0`만 허용, `can_id`는 `[0, kMaxNodeId]`(`gim6010_driver`), 중복 `can_id`는 거부한다.
+- 관절당 command interface는 `position` 1개, state interface는 `position`/`velocity`/`effort` 3개를 기대한다. `info_.joints[i]`의 실제 개수/이름이 이와 다르면 `on_init`을 실패시킨다(URDF-하드웨어 파라미터 불일치를 조용히 넘기지 않는다).
 - **현재 구현은 joint 개수를 정확히 12개로, 또는 `can_id`/`direction`을 0절의 기준 매핑과 일치하도록 강제하지 않는다**(최소 1개 이상만 요구) — 그 엄격한 검증은 `calibration_gui`(5절)에서만 한다. `QuattroSystem` 자체는 구조적 유효성(중복 없음, 범위 안, interface 계약 일치)만 검증한다.
 
 `on_export_state_interfaces()`/`on_export_command_interfaces()`는 오버라이드하지 않는다 — URDF에 선언된 state/command interface가 기본 구현으로 자동 export되고, `read()`/`write()`는 `set_state<double>("<joint>/<interface>", value)`/`get_command<double>("<joint>/<interface>")` 이름 기반 접근자를 그때그때 호출한다(위 "역할" 절 참고). `docs/ros_odrive`의 `odrive_hardware_interface`(구버전 API, 포인터 기반 `export_state_interfaces()` 직접 구현)와는 이 지점에서 구조가 다르다.
@@ -132,20 +134,20 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ### `on_configure`
 
 - 각 joint의 `can_interface`에서 고유한 bus 이름 집합을 뽑아 `gim6010_driver::MotorManager`를 생성하고 연다(bus 이름은 코드에 하드코딩하지 않는다 — 몇 개든, 이름이 무엇이든 동작). 실패하면 `CallbackReturn::ERROR`.
-- `apply_position_gains`가 `true`면(`direct_position`/`direct_velocity`에서만 의미 있음) `Set_Pos_Gain`/`Set_Vel_Gains`를 전송한다. 기본(`false`)은 장치 값을 보존한다. 매뉴얼 예시값(`20.0/0.16/0.32`)은 튜닝 절차의 예시일 뿐 factory default라는 근거가 없다.
+- `apply_position_gains`가 `true`면 `Set_Pos_Gain`/`Set_Vel_Gains`를 전송한다. 기본(`false`)은 장치 값을 보존한다. 매뉴얼 예시값(`20.0/0.16/0.32`)은 튜닝 절차의 예시일 뿐 factory default라는 근거가 없다.
 - `Set_Limits(rotor_velocity_limit_rev_s, motor_current_limit_a)`를 모든 모터에 전송한다.
 - **`Clear_Errors`를 자동으로 호출하지 않는다**(4절) — 기존 fault가 있으면 이후 `on_activate`가 거부해야 한다.
 
 ### `on_activate` — 순차 활성화
 
-1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`로 fresh feedback을 먼저 확인한다(MIT 모드라도 이 단계에서는 아직 목표 위치를 모르므로 MIT 명령을 보내지 않는다 — `0x09`는 제어 모드와 무관하게 항상 쓸 수 있다). `startup_timeout_ms` 안에 전체 모터가 응답하지 않으면 `CallbackReturn::ERROR`. 이어서 `Get_Error`로 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 응답이 없으면) 활성화를 거부한다.
+1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`로 fresh feedback을 먼저 확인한다. `startup_timeout_ms` 안에 전체 모터가 응답하지 않으면 `CallbackReturn::ERROR`. 이어서 `Get_Error`로 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 응답이 없으면) 활성화를 거부한다.
 2. `info_.joints` 순서(= calibration.yaml에 나열된 순서)대로 모터를 하나씩 활성화한다:
    - 그 순간 실제로 읽은 위치를 target으로 준비(급격한 이동 방지, 0절 — 인코더 45° 모호성 때문에 임의 위치로 시작하지 않는다).
-   - MIT면 `kp`/`kd`를 0 근처에서 목표값까지 `engagement_duration_ms` 동안 선형 램프하며 hold(급작스러운 강성 인가 방지). Direct 모드는 `Set_Axis_State(closed-loop)` 후 즉시 hold.
+   - `Set_Axis_State(closed-loop)` 후 그 위치로 즉시 hold.
    - `motor_activation_interval_ms` 동안 안정 상태(fault 없음, feedback 정상)를 확인한 뒤 다음 모터로 진행.
-3. 어느 모터든 활성화 실패(feedback 없음, fault, MIT 범위 거부)가 나오면, **이미 활성화된 모터를 포함해 전체를 safe stop으로 되돌린다**(부분 활성화 상태로 남기지 않는다).
+3. 어느 모터든 활성화 실패(feedback 없음, fault)가 나오면, **이미 활성화된 모터를 포함해 전체를 safe stop으로 되돌린다**(부분 활성화 상태로 남기지 않는다).
 
-`startup_timeout_ms`는 1단계(전체 fresh feedback + fault 확인)만 제한한다 — 12관절 전체를 `engagement_duration_ms`(기본 1000ms)+`motor_activation_interval_ms`(기본 100ms)씩 순차 활성화하는 2단계는 관절 수에 비례해 수 초~수십 초가 걸릴 수 있고 이를 정상 동작으로 본다(`hardware_spawner`의 `--controller-manager-timeout 30`이 이를 감안한 값이다, `docs/packages/quattro_bringup.md`). `startup_timeout_ms`를 전체 활성화 절차에 적용하면 관절 수가 늘어날 때 항상 실패하므로 그렇게 하지 않는다.
+`startup_timeout_ms`는 1단계(전체 fresh feedback + fault 확인)만 제한한다 — 12관절 전체를 `motor_activation_interval_ms`(기본 100ms)씩 순차 활성화하는 2단계는 관절 수에 비례해 수 초가 걸릴 수 있고 이를 정상 동작으로 본다(`hardware_spawner`의 `--controller-manager-timeout 30`이 이를 감안한 값이다, `docs/packages/quattro_bringup.md`). `startup_timeout_ms`를 전체 활성화 절차에 적용하면 관절 수가 늘어날 때 항상 실패하므로 그렇게 하지 않는다.
 
 ### `on_deactivate`
 
@@ -154,31 +156,26 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ### `read()`
 
 1. `MotorManager::poll()`로 두 버스를 non-blocking 드레인한다(추가 스레드 없음 — `docs/packages/gim6010_driver.md` 0/3절).
-2. 각 모터의 최신 feedback을 `joint_transform`으로 joint 단위(rad, rad/s, N·m)로 변환해 state 버퍼에 쓴다. 소스는 3절 표에 따라 `control_method`별로 다르다.
+2. 각 모터의 최신 feedback(`0x09` 폴링)을 `motor_rev_to_joint_rad`/`motor_rev_s_to_joint_rad_s`로 joint 단위(rad, rad/s)로 변환해 state 버퍼에 쓴다.
 3. `feedback_timeout_ms`/`heartbeat_timeout_ms`를 넘긴 모터가 있으면 stale로 표시하고 안전 정책(4절)을 트리거한다.
-4. `direct_torque` 모드에서 실측 토크가 없으면(3절) effort state는 `NaN`을 반환한다 — 임의 값을 대신 채우지 않는다.
+4. Direct Position은 실측 토크 경로가 없으므로 effort state는 `NaN`을 반환한다 — 임의 값을 대신 채우지 않는다.
 
 ### `write()`
 
 1. `active_`가 아니면(비활성 상태) 아무 것도 보내지 않고 즉시 반환한다.
-2. `control_method`에 따라 `joint_transform`으로 motor 단위(또는 MIT 출력축 단위)로 변환한 뒤 `gim6010_driver`의 해당 encode 함수(`Set_Input_Pos`/`Vel`/`Torque` 또는 MIT)를 호출한다.
+2. `joint_rad_to_motor_rev`로 motor 단위로 변환한 뒤 `gim6010_driver::MotorManager::send_set_input_pos`를 호출한다.
 3. encode가 범위 초과로 실패(`std::nullopt`, `docs/packages/gim6010_driver.md` 2절)를 반환하면 그 관절 명령을 거부하고 전체를 safe stop한다 — clamp해서 대신 보내지 않는다(`AGENTS.md` 9번 원칙).
 4. 매 호출 시작 시 `last_write_time_`을 현재 시각으로 갱신한다.
 
-**command watchdog은 `write()`가 아니라 `read()`에서 판정한다.** 컨트롤러가 매 주기 값을 다시 쓰는지("새 값" 여부)를 비교하는 방식은 채택하지 않았다 — `MitTrajectoryController`는 목표에 도달한 뒤에도 완전히 동일한 값으로 계속 hold command를 쓰도록 설계되어 있어(`docs/packages/quattro_controllers.md`), 값이 바뀌지 않는 정상적인 정지 상태를 "명령이 끊겼다"고 오판하게 된다. 대신 `read()`가 `now - last_write_time_ > command_timeout_ms`를 확인한다 — `write()`가 실제로 호출되지 않는 상황(예: `controller_manager` write 루프 자체가 멈춤)만 잡아낸다.
+**command watchdog은 `write()`가 아니라 `read()`에서 판정한다.** 컨트롤러가 매 주기 값을 다시 쓰는지("새 값" 여부)를 비교하는 방식은 채택하지 않았다 — 목표에 도달한 뒤에도 완전히 동일한 값으로 계속 hold command를 쓰는 정상적인 정지 상태를 "명령이 끊겼다"고 오판할 수 있기 때문이다. 대신 `read()`가 `now - last_write_time_ > command_timeout_ms`를 확인한다 — `write()`가 실제로 호출되지 않는 상황(예: `controller_manager` write 루프 자체가 멈춤)만 잡아낸다.
 
-## 3. 제어 방식별 feedback 소스와 단위 변환
+## 3. 제어 방식과 단위 변환
 
-| `hardware_control_method` | GDS68 mode(`Set_Controller_Mode`) | command interface | 명령 단위 변환(`joint_transform.hpp`) | feedback 소스 |
-|---|---|---|---|---|
-| `direct_position` | control 3, input 1 | `position` (rad) | `joint_rad_to_motor_rev`: `motor_rev = direction * (joint_rad+offset) * gear_ratio / (2π)` | `0x09` 폴링, `motor_rev_to_joint_rad`로 역변환 |
-| `direct_velocity` | control 2, input 1 | `velocity` (rad/s) | `joint_rad_s_to_motor_rev_s`: `motor_rev_s = direction * joint_rad_s * gear_ratio / (2π)` | `0x09` 폴링, `motor_rev_s_to_joint_rad_s`로 역변환 |
-| `direct_torque` | control 1, input 1 | `effort` (출력축 N·m) | `joint_Nm_to_motor_Nm`: `motor_Nm = direction * joint_Nm / gear_ratio`(이상적 감속 가정, 효율·마찰 미포함) | `0x09`(position/velocity만, effort는 측정값 없을 시 `NaN`) |
-| `mit` | control 3, input 9 | `position`/`velocity`/`kp`/`kd`/`effort` | **MIT 전용 변환**(아래), `kp`/`kd`는 부호·스케일 변환 없이 그대로 전달 | `0x08` 응답에 포함 |
+| GDS68 mode(`Set_Controller_Mode`) | command interface | 명령 단위 변환(`joint_transform.hpp`) | feedback 소스 |
+|---|---|---|---|
+| control 3, input 1 (Direct Position) | `position` (rad) | `joint_rad_to_motor_rev`: `motor_rev = direction * (joint_rad+offset) * gear_ratio / (2π)` | `0x09` 폴링, `motor_rev_to_joint_rad`로 역변환 |
 
-bringup 기본값은 `mit`이며(`hardware.launch.py`의 `hardware_control_method` 기본값), `MitTrajectoryController`가 5개 command interface를 모두 claim해야 활성화된다(`docs/packages/quattro_controllers.md`). MIT 모드는 명령을 보낼 때마다 같은 프레임 안에서 feedback을 함께 반환하므로 `0x09`를 별도로 폴링하지 않는다.
-
-**MIT 전용 변환에 주의**: GIM6010-8의 MIT(`0x08`)는 이미 8:1 감속을 반영한 출력축 값을 주고받는다(`docs/packages/gim6010_driver.md` 2절) — `direct_position` 등이 쓰는 `motor_rev`(로터 원시값, `Get_Encoder_Estimates`)와는 다른 도메인이다. 따라서 MIT에는 `gear_ratio`를 다시 곱하면 안 되지만, `direction`/`offset`은 여전히 적용해야 한다(로봇 좌우 대칭·ROS joint zero 규약은 GDS68 펌웨어가 알지 못하는 우리 쪽 관례이기 때문). `joint_transform.hpp`는 이를 위해 별도 함수 쌍을 제공한다: `mit_output_rad_to_joint_rad`/`joint_rad_to_mit_output_rad`(위치, offset 적용), `mit_output_rad_s_to_joint_rad_s`/`joint_rad_s_to_mit_output_rad_s`(속도), `mit_output_Nm_to_joint_Nm`/`joint_Nm_to_mit_output_Nm`(토크, offset 없음). 구현 초기에 이 도메인을 헷갈려 "그대로 전달"로 잘못 구현했던 적이 있어(`direction`을 누락) 명시적으로 남긴다.
+`joint_trajectory_controller`가 관절당 `position` command interface 1개를 claim하면 활성화된다(`docs/packages/quattro_bringup.md`).
 
 ## 4. 활성화 조건 요약표 / 안전 정책
 
@@ -227,7 +224,7 @@ bringup 기본값은 `mit`이며(`hardware.launch.py`의 `hardware_control_metho
 
 정확한 timeout 수치를 이 문서에서 미리 확정하지 않는다. 대신 각 watchdog을 정할 때 지켜야 할 관계만 명시한다.
 
-- feedback fault 임계값은 feedback을 요청하는 주기(또는 MIT에서는 명령 전송 주기)보다 충분히 커야 하되, 상위 `ros2_control` 컨트롤러의 `update_rate`(현재 100 Hz)에서 발생하는 정상적인 스케줄링 지연(Linux/Docker jitter)보다는 훨씬 커야 한다.
+- feedback fault 임계값은 feedback을 요청하는 주기보다 충분히 커야 하되, 상위 `ros2_control` 컨트롤러의 `update_rate`(현재 100 Hz)에서 발생하는 정상적인 스케줄링 지연(Linux/Docker jitter)보다는 훨씬 커야 한다.
 - heartbeat fault 임계값은 GDS68의 기본 heartbeat 주기(매뉴얼 4.1.5절, 기본 100 ms)의 배수로 잡아 단일 프레임 손실을 오탐하지 않게 한다.
 - controller scheduling 지연은 "경고"와 "fault"를 별도 임계값으로 나눠, 일시적 지연과 지속적 문제를 구분한다.
 - 위 세 종류(feedback, heartbeat, scheduling)는 서로 다른 원인을 가리키므로 하나의 timeout으로 합치지 않는다.
@@ -244,6 +241,5 @@ Raspberry Pi 5 + Docker의 실제 jitter를 측정한 뒤 구체적 ms 값을 �
 
 - 사용하는 드라이버(CAN Simple/MIT 프로토콜 상세): `docs/packages/gim6010_driver.md`
 - 인터페이스 계약(Xacro 파라미터): `docs/packages/quattro_description.md`
-- MIT 5-interface 계약: `docs/packages/quattro_controllers.md`
 - 실행 절차: `docs/packages/quattro_bringup.md`, `docs/calibration.md`
 - 실기 검증 미해결 항목: `docs/development_status.md`

@@ -14,8 +14,6 @@
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>quattro</exec_depend>
-  <exec_depend>quattro_controllers</exec_depend>
-  <exec_depend>quattro_core_ros</exec_depend>
   <exec_depend>quattro_description</exec_depend>
   <exec_depend>quattro_hardware</exec_depend>
   <exec_depend>quattro_sensors</exec_depend>

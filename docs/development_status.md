@@ -18,13 +18,10 @@ src/
 ├── quattro/
 ├── quattro_description/
 ├── quattro_bringup/
-├── quattro_controllers/
 ├── quattro_gazebo/
 ├── quattro_hardware/    # 구현됨
 ├── quattro_sensors/
 ├── quattro_teleop/
-├── quattro_core/         # ROS 비의존 C++ 제어 core, 기반 구조 구현 중
-├── quattro_core_ros/     # quattro_core를 ROS에 연결하는 노드(gain_scheduler_node)
 └── gim6010_driver/       # 구현됨
 ```
 
@@ -36,11 +33,9 @@ src/
 
 - 3-DOF leg FK/IK
 - Jacobian(analytic), foot velocity, damped pseudoinverse 기반 joint velocity, force→torque(`LegKinematics.jacobian`/`foot_velocity`/`joint_velocity_from_foot_velocity`/`force_to_joint_torque`)
-- 4-leg FK/IK, `QuadrupedKinematics.joint_velocities`(다리별 damped pseudoinverse로 4x3 qd_des 계산)
-- Bézier swing / stance gait, analytic 위치/속도/가속도(`GaitGenerator.update_states`, `FootTrajectoryState`) — finite difference 미사용
-- diagonal trot phase
-- `/cmd_vel` 기반 gait controller — 정상 gait 주기 포인트는 `JointTrajectory`에 `positions`와 `velocities`를 함께 채운다(`qd_des = joint_velocities(rpy, q_des, v_des)`); 초기 자세 전환은 이전처럼 `positions`만
-- `swing/<leg>`(4개, `std_msgs/Bool`) 발행 — `GaitGenerator.update_states()`의 `in_swing`을 그대로 노출, `quattro_core_ros/gain_scheduler_node`가 구독
+- 4-leg FK/IK
+- Bézier swing / stance gait(`GaitGenerator.update`) — diagonal trot phase
+- `/cmd_vel` 기반 gait controller — 발끝 목표 궤적을 IK로 관절 각도(`positions`)로 변환해 `JointTrajectory`로 발행
 - body pose command
 - IMU roll/pitch balance PID
 - `JointTrajectory` 출력
@@ -57,11 +52,9 @@ src/
 
 - Gazebo Harmonic world
 - `gz_ros2_control`
-- simulation controller 설정: `direct_position`(기본, `joint_trajectory_controller`)과 `mit`(`quattro_controllers/MitTrajectoryController`, `command_mode=effort_emulation` — host에서 MIT PD를 계산해 Gazebo 표준 `effort` interface에 씀)
-- `hardware_control_method:=mit`일 때 `quattro_core_ros/gain_scheduler_node`로 swing/stance gain 전환
+- simulation controller 설정: `joint_trajectory_controller`(관절당 `position` command interface 하나)
 - headless/GUI launch
 - gait controller 연동
-- **2026-08-20 headless(physics-only, GPU 없음) 실행으로 라이브 검증**: `mit`/`direct_position` 둘 다 정상 활성화, effort_emulation PD가 실제로 관절을 목표로 수렴시킴, `/cmd_vel` 인가 시 gain_scheduler_node가 대각선 트롯 패턴으로 `kp`를 실시간 전환하는 것을 확인(`docs/gazebo.md` 6a절). GUI 렌더링은 미검증(GPU 없음)
 
 ### `quattro_teleop`
 
@@ -76,24 +69,11 @@ src/
 
 실제 Raspberry Pi I2C 조건에서 계속 검증이 필요하다.
 
-### `quattro_controllers`
-
-- `quattro_controllers/MitTrajectoryController` (`ros2_control` 플러그인, `pluginlib` 등록 완료)
-- `command_mode=mit`(기본, 실기): 관절당 `position/velocity/kp/kd/effort` 5개 command interface 동시 claim
-- `command_mode=effort_emulation`(Gazebo): 관절당 `effort` 1개만 claim, `tau=clamp(kp*(q_des-q)+kd*(qd_des-qd)+effort_ff, ±max_emulated_torque_Nm)`을 host에서 계산해 그대로 씀 — 실제 GDS68 MIT PD 식과 동일
-- `~/joint_trajectory` 구독, `on_activate`/`on_deactivate` 안전 hold
-- `velocities`가 있는 궤적: cubic Hermite interpolation(analytic, position+velocity 동시 계산). 없는 궤적: 기존과 동일한 position 선형 보간 + velocity 0(하위 호환)
-- `effort`가 있는 궤적: 선형 보간해 torque feed-forward로 전달. 없으면 0
-- `kp ∈ [0, 500]`, `kd ∈ [0, 5]` 범위 검증(GIM6010 MIT 프레임 12-bit 필드 근거), **런타임에도** `add_on_set_parameters_callback`으로 동일 검증 후 `RealtimeBuffer`를 통해 `kp`/`kd` 변경 가능 — `quattro_core_ros/gain_scheduler_node`가 이 경로로 swing/stance gain을 전환한다(`docs/control/gain_tuning.md` 9절)
-- gtest 14개(`test_mit_trajectory_controller.cpp`): activation hold, position-only 하위호환, Hermite velocity, effort feed-forward, 크기 불일치/NaN 거부, timeout 시 zero-command fallback, 런타임 gain 변경 반영/거부, effort_emulation 활성화 hold/PD 식 일치/torque clamp
-
-세부 내용은 `docs/packages/quattro_controllers.md`.
-
 ### `gim6010_driver`
 
 - Linux SocketCAN RAII wrapper, non-blocking, error frame(warning/passive/bus-off) 파싱
 - CAN Simple 전체 명령(axis 상태, Direct Position/Velocity/Torque, 리밋/게인, 텔레메트리, Get_Error) encode/decode
-- MIT motion control encode/decode(범위 밖 입력은 clamp 없이 거부)
+- MIT motion control encode/decode(범위 밖 입력은 clamp 없이 거부) — `calibration_gui`의 관절 영점 조깅 절차가 사용
 - 다중 bus/다중 모터 라우팅(`MotorManager`), 특정 관절 구성에 하드코딩되지 않아 다른 프로젝트에서도 재사용 가능
 - 단일 모터 read-only 진단 CLI(`gim6010_diagnostic`)
 - gtest 36개 통과(실제 CAN 버스 없이 encode/decode/routing 검증, `docs/packages/gim6010_driver.md` 6절). `quattro_hardware`가 이 라이브러리를 링크하지만, 실물 CAN이 없어 실기 연동은 미검증.
@@ -102,7 +82,7 @@ src/
 
 ### `quattro_hardware`
 
-**구현됨.** `QuattroSystem`(`hardware_interface::SystemInterface`)이 `gim6010_driver`를 라이브러리로 링크해 joint 방향/오프셋/기어비 변환, 순차 활성화, MIT/Direct 명령 변환을 수행한다. `calibration_gui`도 함께 구현되어 있다. 소비 측 계약(`ros2_control` 파라미터 이름, command/state interface 목록)은 `quattro_description`의 Xacro와 `quattro_bringup`/`quattro_controllers`에 고정되어 있다. 실제 CAN bus·모터 연동(`on_activate`/`read`/`write`)은 이 개발 환경에 실물 CAN이 없어 미검증이다. 상세는 `docs/packages/quattro_hardware.md`.
+**구현됨.** `QuattroSystem`(`hardware_interface::SystemInterface`)이 `gim6010_driver`를 라이브러리로 링크해 joint 방향/오프셋/기어비 변환, 순차 활성화, Direct Position 명령 변환을 수행한다. `calibration_gui`도 함께 구현되어 있다. 소비 측 계약(`ros2_control` 파라미터 이름, command/state interface 목록)은 `quattro_description`의 Xacro와 `quattro_bringup`에 고정되어 있다. 실제 CAN bus·모터 연동(`on_activate`/`read`/`write`)은 이 개발 환경에 실물 CAN이 없어 미검증이다. 상세는 `docs/packages/quattro_hardware.md`.
 
 ### `quattro_bringup`
 
@@ -110,40 +90,16 @@ src/
 - controller manager
 - hardware spawner
 - `joint_state_broadcaster`
-- 기본 `mit_trajectory_controller` (Direct Position 선택 시 `joint_trajectory_controller`)
+- `joint_trajectory_controller`
 - IMU/teleop/gait controller 실행 조합
 - remote visualization 관련 launch
-- `hardware_control_method` 기본값 `mit`, `motor_activation_interval_ms` 기본값 `100`
-- launch 시점에 `calibration_file`의 joint별 `kp`/`kd`를 읽어 `mit_trajectory_controller` 파라미터에 주입 (읽기 실패 시 `hardware_controllers_mit.yaml`의 값으로 대체)
-
-### `quattro_core`
-
-**기반 구조 구현됨 (진행 중).** ROS 비의존 C++17 사족보행 제어 core, Cheetah-Software 아키텍처를 참고해 재구현(`docs/references/cheetah_software.md`).
-
-- `LegKinematics`(analytic FK/IK/Jacobian/foot velocity/damped pseudoinverse/force→torque) — `quattro/kinematics.py`의 C++ 대응
-- `LegController`(`LegState`/`LegCommand`/`MitJointCommand`) — Cartesian impedance → `tau_ff = J^T F`, joint PD는 GIM6010 MIT 내부에 위임(host에서 중복 계산 안 함), Cartesian force clamp(`J^T` 적용 전)와 torque clamp(적용 후) 이중 안전, 음수 Cartesian gain 거부
-- `GainProfile`/`GainProfileLimits`/`SwingStanceGainProfile`/`FsmGainTable` — swing/stance·FSM 상태별 Kp/Kd 데이터/검증 계층(`docs/control/gain_tuning.md`). **`quattro_core_ros/gain_scheduler_node`가 LOCOMOTION swing/stance 절반을 실제로 소비**(`MitTrajectoryController`의 런타임 gain 콜백으로); `applyGainProfile`/Cartesian gain 경로와 다른 FSM 상태는 아직 연결되지 않음
-- `FootTrajectoryState`/`LegPhase`/`StateEstimate`/`ControlFsmState`(+`ControlFsmStateHandler` 인터페이스) — 데이터 구조/인터페이스만, 알고리즘 본체 없음
-- gtest 36개(`test_leg_kinematics.cpp` 10개, `test_leg_controller.cpp` 10개, `test_gain_profile.cpp` 16개)
-
-세부 내용은 `docs/packages/quattro_core.md`. Balance controller, gait scheduler/foot trajectory 알고리즘, state estimator 알고리즘, 구체적 FSM은 아직 구현하지 않았다.
-
-### `quattro_core_ros`
-
-**구현됨(범위: swing/stance joint gain만).** `quattro_core`를 실제 ROS 시스템에 연결하는 노드 패키지.
-
-- `gain_scheduler_node`: `quattro/gait_controller`의 `swing/<leg>` 토픽을 구독해 `quattro_core::FsmGainTable`에서 다리별 swing/stance `GainProfile`을 조회하고, 값이 바뀔 때만 대상 컨트롤러(기본 `mit_trajectory_controller`)에 `kp`/`kd`를 `set_parameters`로 전달
-- 잘못된 joint 개수/gain profile(음수, NaN/Inf, MIT 범위 초과)이면 노드 생성자가 예외를 던져 시작을 실패시킴(설정 오류를 숨기지 않음)
-- gtest 4개(`test_gain_scheduler_node.cpp`): 시작 시 initial stance push, swing 전환 시 해당 다리만 gain 변경, 잘못된 joints/gain 거부
-- **2026-08-20 Gazebo headless 실행으로 라이브 검증**: `/cmd_vel` 전진 명령 시 diagonal trot 패턴에 맞춰 `mit_trajectory_controller`의 `kp`가 실시간으로 전환되는 것을 `ros2 param get`으로 직접 확인(`docs/gazebo.md` 6a절)
-
-세부 내용은 `docs/packages/quattro_core_ros.md`. Cartesian impedance/torque feed-forward(발란스 컨트롤러 필요) 및 STAND/STAND_UP 등 다른 FSM 상태 전환은 아직 구현하지 않았다.
+- `motor_activation_interval_ms` 기본값 `100`
 
 ## 현재 하드웨어 구성
 
 - SteadyWin GIM6010-8 × 12 (온보드 인코더 1개, secondary encoder 없음 — `docs/packages/quattro_hardware.md` 0절)
 - GDS68
-- CAN Simple / Direct Position·Velocity·Torque / MIT Control
+- CAN Simple / Direct Position
 - `can0`: CAN ID 0~5
 - `can1`: CAN ID 6~11
 - 500 kbit/s

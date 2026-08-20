@@ -142,7 +142,7 @@ RxSdo/TxSdo는 명령별로 이름 붙지 않은 임의 파라미터(극쌍수, 
 | Velocity | B3 + B4[7:4] (12bit) | `vel = vel_int*130/4095 - 65` |
 | Torque | B4[3:0] + B5 (12bit) | `t = t_int*100/4095 - 50` |
 
-이 6개 상수(`12.5`/`65`/`500`/`5`/`50`/`100`)는 GDS68 프로토콜 상수이며 모터별 튜닝값이 아니다 — `kMitPositionRangeRad` 등으로 코드에 하드코딩했다. `quattro_controllers::MitTrajectoryController`가 `on_configure`에서 검증하는 `kp ∈ [0,500]`/`kd ∈ [0,5]` 범위와 동일하다(`docs/packages/quattro_controllers.md`).
+이 6개 상수(`12.5`/`65`/`500`/`5`/`50`/`100`)는 GDS68 프로토콜 상수이며 모터별 튜닝값이 아니다 — `kMitPositionRangeRad` 등으로 코드에 하드코딩했다. `kp ∈ [0,500]`/`kd ∈ [0,5]` 범위는 `calibration_gui`가 관절 영점 조깅용 MIT hold gain을 검증할 때도 동일하게 쓴다(`docs/packages/quattro_hardware.md` 5절).
 
 ```cpp
 struct MitCommand { double position_rad, velocity_rad_s, kp, kd, torque_Nm; };
@@ -157,7 +157,7 @@ MitFeedback decode_mit_feedback(const CanFrame & frame);
 
 ## 3. 모터 상태·라우팅 계층 — `gim6010_motor.hpp`/`motor_manager.hpp`
 
-`Gim6010Motor`는 명령별 마지막 수신 값과 수신 시각(`std::chrono::steady_clock`)만 들고 있다. position/velocity feedback은 `Get_Encoder_Estimates` 응답과 MIT 응답 둘 다 같은 freshness 시계(`has_fresh_feedback`)를 갱신한다 — 어느 쪽이 실제 feedback 소스인지는 `hardware_control_method`에 달려 있어 호출자(`quattro_hardware`)가 판단할 문제이기 때문이다.
+`Gim6010Motor`는 명령별 마지막 수신 값과 수신 시각(`std::chrono::steady_clock`)만 들고 있다. position/velocity feedback은 `Get_Encoder_Estimates` 응답과 MIT 응답 둘 다 같은 freshness 시계(`has_fresh_feedback`)를 갱신한다 — 어느 쪽을 실제 feedback 소스로 쓸지는 호출자가 정한다: `quattro_hardware/QuattroSystem`은 `Get_Encoder_Estimates`만 폴링하고, `calibration_gui`는 조깅에 쓰는 MIT 응답을 읽는다.
 
 ```cpp
 class MotorManager {
@@ -258,7 +258,6 @@ colcon build --symlink-install --packages-select gim6010_driver --event-handlers
 
 ## 관련 문서
 
-- 이 드라이버를 사용하는 쪽(joint 변환, 안전 정책, CAN ID 매핑): `docs/packages/quattro_hardware.md`
-- MIT 5-interface 계약: `docs/packages/quattro_controllers.md`
+- 이 드라이버를 사용하는 쪽(joint 변환, 안전 정책, CAN ID 매핑, MIT 조깅을 쓰는 `calibration_gui`): `docs/packages/quattro_hardware.md`
 - 제조사 번역 매뉴얼: `docs/GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf`
 - 참고 프로젝트: `docs/ros_odrive/`, `docs/Steadywin-RS485-CAN-Connector/`

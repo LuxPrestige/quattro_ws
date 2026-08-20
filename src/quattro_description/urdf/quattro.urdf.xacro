@@ -5,7 +5,6 @@
     name="calibration_file"
     default="../config/calibration.yaml"/>
   <xacro:arg name="simulation" default="false"/>
-  <xacro:arg name="hardware_control_method" default="mit"/>
   <xacro:arg name="apply_position_gains" default="false"/>
   <xacro:arg name="position_gain" default="0.0"/>
   <xacro:arg name="velocity_gain" default="0.0"/>
@@ -17,7 +16,6 @@
   <xacro:property
     name="hardware_calibration"
     value="${xacro.load_yaml('$(arg calibration_file)')['joints']}"/>
-  <xacro:property name="hardware_control_method" value="$(arg hardware_control_method)"/>
 
   <!--
     Mesh directory:
@@ -59,31 +57,10 @@
 
   <xacro:macro name="quattro_hardware_joint" params="name lower upper">
     <joint name="${name}">
-      <xacro:if value="${hardware_control_method == 'direct_position'}">
-        <command_interface name="position">
-          <param name="min">${lower}</param>
-          <param name="max">${upper}</param>
-        </command_interface>
-      </xacro:if>
-      <xacro:if value="${hardware_control_method == 'mit'}">
-        <command_interface name="position"><param name="min">${lower}</param><param name="max">${upper}</param></command_interface>
-        <command_interface name="velocity"><param name="min">-4.0</param><param name="max">4.0</param></command_interface>
-        <command_interface name="kp"/>
-        <command_interface name="kd"/>
-        <command_interface name="effort"><param name="min">-10.0</param><param name="max">10.0</param></command_interface>
-      </xacro:if>
-      <xacro:if value="${hardware_control_method == 'direct_velocity'}">
-        <command_interface name="velocity">
-          <param name="min">-4.0</param>
-          <param name="max">4.0</param>
-        </command_interface>
-      </xacro:if>
-      <xacro:if value="${hardware_control_method == 'direct_torque'}">
-        <command_interface name="effort">
-          <param name="min">-10.0</param>
-          <param name="max">10.0</param>
-        </command_interface>
-      </xacro:if>
+      <command_interface name="position">
+        <param name="min">${lower}</param>
+        <param name="max">${upper}</param>
+      </command_interface>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
@@ -93,38 +70,15 @@
       <param name="offset">${hardware_calibration[name]['offset']}</param>
       <param name="gear_ratio">8.0</param>
       <param name="current_limit">${hardware_calibration[name].get('current_limit', 5.0)}</param>
-      <param name="mit_kp">${hardware_calibration[name]['kp']}</param>
-      <param name="mit_kd">${hardware_calibration[name]['kd']}</param>
     </joint>
   </xacro:macro>
 
-  <!--
-    simulation:=true always uses gz_ros2_control/GazeboSimSystem, whose
-    stock implementation only understands the standard interface names
-    (position/velocity/effort); it has no notion of the GIM6010 MIT
-    frame's per-joint kp/kd fields. So unlike the real-hardware branch
-    above, this macro cannot expose position/velocity/kp/kd/effort for
-    hardware_control_method=mit. Instead it exposes a single `effort`
-    command interface, and quattro_controllers/MitTrajectoryController's
-    command_mode=effort_emulation computes the MIT PD law on the host and
-    writes the result there (docs/packages/quattro_controllers.md,
-    docs/gazebo.md). Every other hardware_control_method keeps the
-    original position-only interface, unchanged.
-  -->
   <xacro:macro name="quattro_simulation_joint" params="name lower upper initial_value">
     <joint name="${name}">
-      <xacro:if value="${hardware_control_method == 'mit'}">
-        <command_interface name="effort">
-          <param name="min">-40.0</param>
-          <param name="max">40.0</param>
-        </command_interface>
-      </xacro:if>
-      <xacro:unless value="${hardware_control_method == 'mit'}">
-        <command_interface name="position">
-          <param name="min">${lower}</param>
-          <param name="max">${upper}</param>
-        </command_interface>
-      </xacro:unless>
+      <command_interface name="position">
+        <param name="min">${lower}</param>
+        <param name="max">${upper}</param>
+      </command_interface>
       <state_interface name="position">
         <param name="initial_value">${initial_value}</param>
       </state_interface>
@@ -547,7 +501,6 @@
     <ros2_control name="QuattroSystem" type="system">
       <hardware>
         <plugin>quattro_hardware/QuattroSystem</plugin>
-        <param name="control_method">${hardware_control_method}</param>
         <param name="apply_position_gains">$(arg apply_position_gains)</param>
         <param name="position_gain">$(arg position_gain)</param>
         <param name="velocity_gain">$(arg velocity_gain)</param>
@@ -561,7 +514,6 @@
         <param name="scheduling_warning_ms">50</param>
         <param name="rotor_velocity_limit_rev_s">5.0</param>
         <param name="motor_current_limit_a">5.0</param>
-        <param name="engagement_duration_ms">1000</param>
         <param name="telemetry_period_ms">500</param>
       </hardware>
       <xacro:quattro_hardware_joint name="front_left_hip_joint" lower="-1.04" upper="1.04"/>

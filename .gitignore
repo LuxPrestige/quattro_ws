@@ -23,6 +23,7 @@ __pycache__/
 
 # Local hardware calibration
 src/quattro_bringup/config/motor_ids.yaml
+docs/references/
 
 # Runtime logs and bags
 *.log
