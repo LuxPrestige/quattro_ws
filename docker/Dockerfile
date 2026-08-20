@@ -93,15 +93,15 @@ RUN set -eux; \
 RUN mkdir -p /ws \
     && chown -R ${USERNAME}:${USERNAME} /ws
 
-COPY docker/entrypoint.sh /usr/local/bin/lgh_ws_entrypoint.sh
-COPY docker/ros_setup.bash /usr/local/bin/lgh_ws_ros_setup.bash
+COPY docker/entrypoint.sh /usr/local/bin/quattro_ws_entrypoint.sh
+COPY docker/ros_setup.bash /usr/local/bin/quattro_ws_ros_setup.bash
 
-RUN chmod +x /usr/local/bin/lgh_ws_entrypoint.sh \
-    && printf '\nsource /usr/local/bin/lgh_ws_ros_setup.bash\n' \
+RUN chmod +x /usr/local/bin/quattro_ws_entrypoint.sh \
+    && printf '\nsource /usr/local/bin/quattro_ws_ros_setup.bash\n' \
         >> "/home/${USERNAME}/.bashrc"
 
 USER ${USERNAME}
 WORKDIR /ws
 
-ENTRYPOINT ["/usr/local/bin/lgh_ws_entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/quattro_ws_entrypoint.sh"]
 CMD ["bash"]

@@ -5,7 +5,7 @@
 ROS 2 개발, 빌드, 테스트는 기본적으로 Docker 컨테이너 내부 `/ws`에서 수행한다.
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 docker compose up -d dev
 docker compose exec dev bash
 ```
@@ -48,7 +48,7 @@ colcon build \
 BNO085 I2C와 joystick을 사용할 때 `compose.hardware.yaml`을 함께 사용한다.
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 INPUT_GID=$(getent group input | cut -d: -f3) \
 docker compose \
   -f compose.yaml \
@@ -88,7 +88,7 @@ echo "$DISPLAY"
 `DISPLAY`가 설정된 터미널에서 X11 override를 적용하여 컨테이너를 재생성한다.
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 docker compose \
   -f compose.yaml \
   -f compose.x11.yaml \
@@ -148,7 +148,7 @@ GitHub 저장소를 여러 개발 PC와 Raspberry Pi 사이의 기준 저장소�
 작업 전:
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 git status
 git pull origin main
 ```

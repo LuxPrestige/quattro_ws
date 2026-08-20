@@ -6,7 +6,7 @@
 
 고정 개발 환경과 하드웨어 기준은 다음과 같다.
 
-- 워크스페이스: `lgh_ws`
+- 워크스페이스: `quattro_ws`
 - ROS 2: Jazzy
 - OS: Ubuntu 24.04 계열
 - 기본 실행 환경: Docker, 컨테이너 내부 `/ws`
