@@ -122,7 +122,7 @@
   <!-- ================================================================ -->
   <link name="base_link">
     <xacro:stl_visual filename="body_frame.stl" material_name="orange"/>
-    <xacro:box_collision xyz="0 0 0" rpy="0 0 0" size="0.43 0.14 0.10"/>
+    <xacro:box_collision xyz="0 0 0" rpy="0 0 0" size="0.30 0.24 0.10"/>
     <inertial>
       <origin xyz="0.001210 -0.000887 -0.007933" rpy="0 0 0"/>
       <mass value="3.092"/>
@@ -141,7 +141,7 @@
   <!-- ================================================================ -->
   <link name="front_left_hip_link">
     <xacro:stl_visual filename="front_left_hip.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
+    <xacro:cylinder_collision xyz="0 0.02 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="-0.003 -0.000913 -0.000423" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -166,7 +166,7 @@
 
   <link name="front_left_upper_leg_link">
     <xacro:stl_visual filename="left_upper_leg.stl" material_name="black"/>
-    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
+    <xacro:box_collision xyz="0 0 -0.090" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="0.00011 -0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -191,7 +191,7 @@
 
   <link name="front_left_lower_leg_link">
     <xacro:stl_visual filename="left_lower_leg.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
+    <xacro:cylinder_collision xyz="0 0 -0.090" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="-0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -247,7 +247,7 @@
   <!-- ================================================================ -->
   <link name="front_right_hip_link">
     <xacro:stl_visual filename="front_right_hip.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 -0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
+    <xacro:cylinder_collision xyz="0 -0.02 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="-0.003304 0.000913 -0.000118" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -272,7 +272,7 @@
 
   <link name="front_right_upper_leg_link">
     <xacro:stl_visual filename="right_upper_leg.stl" material_name="black"/>
-    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
+    <xacro:box_collision xyz="0 0 -0.090" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="-0.00011 0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -297,7 +297,7 @@
 
   <link name="front_right_lower_leg_link">
     <xacro:stl_visual filename="right_lower_leg.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
+    <xacro:cylinder_collision xyz="0 0 -0.090" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -353,7 +353,7 @@
   <!-- ================================================================ -->
   <link name="back_left_hip_link">
     <xacro:stl_visual filename="back_left_hip.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
+    <xacro:cylinder_collision xyz="0 0.02 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="0.003304 -0.000713 -0.000118" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -378,7 +378,7 @@
 
   <link name="back_left_upper_leg_link">
     <xacro:stl_visual filename="left_upper_leg.stl" material_name="black"/>
-    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
+    <xacro:box_collision xyz="0 0 -0.090" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="0.00011 -0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
@@ -403,7 +403,7 @@
 
   <link name="back_left_lower_leg_link">
     <xacro:stl_visual filename="left_lower_leg.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 0 -0.105" rpy="0 0 0" radius="0.018" length="0.18"/>
+    <xacro:cylinder_collision xyz="0 0 -0.090" rpy="0 0 0" radius="0.018" length="0.18"/>
     <inertial>
       <origin xyz="-0.000176 0 -0.034133" rpy="0 0 0"/>
       <mass value="0.17"/>
@@ -459,7 +459,7 @@
   <!-- ================================================================ -->
   <link name="back_right_hip_link">
     <xacro:stl_visual filename="back_right_hip.stl" material_name="black"/>
-    <xacro:cylinder_collision xyz="0 -0.04525 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
+    <xacro:cylinder_collision xyz="0 -0.02 0" rpy="1.57079632679 0 0" radius="0.035" length="0.075"/>
     <inertial>
       <origin xyz="0.003 0.001113 -0.000423" rpy="0 0 0"/>
       <mass value="0.421"/>
@@ -484,7 +484,7 @@
 
   <link name="back_right_upper_leg_link">
     <xacro:stl_visual filename="right_upper_leg.stl" material_name="black"/>
-    <xacro:box_collision xyz="0 0 -0.105" rpy="0 0 0" size="0.045 0.045 0.18"/>
+    <xacro:box_collision xyz="0 0 -0.090" rpy="0 0 0" size="0.045 0.045 0.18"/>
     <inertial>
       <origin xyz="-0.00011 0.017289 -0.042003" rpy="0 0 0"/>
       <mass value="0.823"/>
