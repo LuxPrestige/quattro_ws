@@ -34,7 +34,7 @@
 
 ## 도커 실행 시나리오
 
-기본 원칙과 항목별 상세는 [`development_environment.md`](development_environment.md)가 1차 출처다. 아래는 목적별로 자주 쓰는 조합만 정리한 요약이다. 모든 명령은 저장소 루트(`~/lgh_ws`)에서 실행한다.
+기본 원칙과 항목별 상세는 [`development_environment.md`](development_environment.md)가 1차 출처다. 아래는 목적별로 자주 쓰는 조합만 정리한 요약이다. 모든 명령은 저장소 루트(`~/quattro_ws`)에서 실행한다.
 
 ### A. Raspberry Pi 5 — 실기 (X11 + 하드웨어)
 
@@ -46,7 +46,7 @@ echo "$DISPLAY"   # 비어 있으면 X11 forwarding부터 확인
 ```
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 INPUT_GID=$(getent group input | cut -d: -f3) \
 docker compose \
   -f compose.yaml \
@@ -69,10 +69,10 @@ docker compose \
 
 ### B. 데스크톱 — GPU 개발 (NVIDIA)
 
-Gazebo/RViz를 하드웨어 가속으로 돌리며 개발할 때 사용한다. 실기 장치는 다루지 않는다.
+Gazebo/RViz를 하드웨어 가속으로 돌리며 개발할 때 사용한다. 실제 로봇 제어는 다루지 않는다.
 
 ```bash
-cd ~/lgh_ws
+cd ~/quattro_ws
 docker compose \
   -f compose.yaml \
   -f compose.x11.yaml \
