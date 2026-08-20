@@ -7,6 +7,7 @@ Quattro의 로봇 모델 패키지(`ament_cmake`). URDF/Xacro, mesh, TF 구조, 
 ```text
 src/quattro_description/
 ├── urdf/quattro.urdf.xacro     # 소스 원본 (생성된 URDF를 직접 수정하지 않음)
+├── urdf/quattro.urdf           # 동역학·충돌 모델만 담은 순수 URDF
 ├── meshes/stl/                  # 몸체/다리 visual용 STL
 ├── rviz/quattro.rviz            # 기본 RViz 설정
 ├── rviz/hardware_remote.rviz    # 원격 하드웨어 시각화용 RViz 설정
@@ -14,6 +15,11 @@ src/quattro_description/
 ├── scripts/trajectory_to_joint_state.py  # 시각화 전용 trajectory→joint_states 브리지
 └── config/calibration.yaml      # Xacro 검사용 기본 calibration (머신별 파일과 별개)
 ```
+
+`quattro.urdf`는 외부 동역학 도구에서 바로 읽을 수 있도록 링크·조인트·질량·무게중심·관성과
+primitive collision geometry를 담고 `visual`, `ros2_control`, Gazebo 및 하드웨어 설정은 제외한 모델이다. 길이·질량·관성은
+각각 m, kg, kg·m² 단위이며 REP-103 좌표계를 따른다. 동역학 수치나 관절 구조를 변경할
+때는 소스 원본인 `quattro.urdf.xacro`와 이 파일을 함께 갱신한다.
 
 ## `quattro.urdf.xacro`
 
