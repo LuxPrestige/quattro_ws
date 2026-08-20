@@ -168,5 +168,3 @@ CAN 프로토콜은 `packages/gim6010_driver.md`, 안전 정책·활성화 절�
 | 자료 | 내용 |
 |---|---|
 | `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf` | 제조사 번역 매뉴얼 (CAN Simple/오류 코드 원본) |
-| `ros_odrive/`, `Steadywin-RS485-CAN-Connector/` | `gim6010_driver`/`quattro_hardware` 재설계를 위해 아키텍처만 참고한 외부 레퍼런스 프로젝트. 워크스페이스 의존성이 아니다 |
-
