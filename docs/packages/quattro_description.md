@@ -27,20 +27,19 @@ primitive collision geometry를 담고 `visual`, `ros2_control`, Gazebo 및 하�
 
 | 인자 | 기본값 | 용도 |
 |---|---|---|
-| `calibration_file` | `../config/calibration.yaml` | 관절별 `can_interface`/`can_id`/`direction`/`offset`/`kp`/`kd`(+선택적 `current_limit`) YAML |
+| `calibration_file` | `../config/calibration.yaml` | 공통 Direct Position limit/gain과 관절별 CAN 매핑·방향·offset YAML |
 | `simulation` | `false` | `true`면 `gz_ros2_control/GazeboSimSystem`, `false`면 `quattro_hardware/QuattroSystem` |
-| `apply_position_gains`, `position_gain`, `velocity_gain`, `velocity_integrator_gain` | `false`, `0.0`×3 | GDS68 runtime position/velocity gain을 configure 단계에서 덮어쓸지 여부 |
 | `motor_activation_interval_ms` | `100` | 모터 순차 활성화 안정화 간격 |
 | `visual_color_override`, `visual_color` | `false`, `0.1 0.1 0.1 1.0` | 비교 시각화에서 모든 STL의 재질 색상을 단일 RGBA로 덮어쓰기 |
 | `simulation_controllers` | `../../quattro_gazebo/config/gazebo_controllers.yaml` | Gazebo `ros2_control` 플러그인에 전달되는 controller yaml 경로 |
 
-**`quattro_hardware_joint` 매크로**: joint당 `position` command interface 하나와 `position`/`velocity`/`effort` state interface 3개를 선언한다. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정), `current_limit`을 넘긴다 — 이 값들은 `quattro_hardware/QuattroSystem` 구현이 소비하는 계약이다(`docs/packages/quattro_hardware.md` 참고).
+**`quattro_hardware_joint` 매크로**: joint당 `position` command interface 하나와 `position`/`velocity`/`effort` state interface 3개를 선언한다. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정)를 넘긴다.
 
 **`quattro_simulation_joint` 매크로**: Gazebo용 구성. joint당 `position` command interface 하나와 `position`(초기값 지정)/`velocity`/`effort` state interface 3개를 선언한다 — `quattro_hardware_joint`와 동일한 command interface 구성이라 `joint_trajectory_controller/JointTrajectoryController`가 실기·시뮬레이션 양쪽에서 그대로 쓰인다.
 
 **geometry 매크로**: `stl_visual`은 기존 STL을 visual에만 사용한다. Collision은 `box_collision`, `cylinder_collision`, `sphere_collision` primitive 매크로로 정의하여 시뮬레이션 접촉 계산을 단순화한다.
 
-**`<ros2_control name="QuattroSystem" type="system">`**: 실제 하드웨어 플러그인 파라미터(gain 관련, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `telemetry_period_ms`)를 12관절 매크로 호출과 함께 선언한다. 이 파라미터 이름 자체가 `quattro_hardware::QuattroSystem`이 `on_init`에서 읽어야 할 계약이다.
+**`<ros2_control name="QuattroSystem" type="system">`**: YAML 기반 공통 Direct Position limit/gain과 timeout, rotor velocity limit, telemetry period를 12관절 매크로 호출과 함께 선언한다. 이 파라미터 이름 자체가 `quattro_hardware::QuattroSystem`이 `on_init`에서 읽어야 할 계약이다.
 
 ## 검증
 

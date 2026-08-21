@@ -99,16 +99,15 @@ ros2 run quattro_hardware calibration_gui \
 
 전체 활성 모드에서는 나머지 11개 모터가 기존 목표 위치를 유지한다.
 
-## 현재 GUI 내부 안전값
+## GUI 제어 설정
 
-현재 `calibration_gui.cpp`는 캘리브레이션용으로 GDS68의 rotor/current limits를 다음 값으로 설정한다.
+GUI는 runtime bringup과 동일하게 Direct Position 모드를 사용한다. 활성화 전에 YAML의 공통 current limit과 position/velocity gain을 해당 모터에 적용한다. rotor velocity limit은 캘리브레이션 전용으로 다음 값을 사용한다.
 
 ```text
 rotor velocity limit: 5.0 rev/s
-current limit : 10.0
 ```
 
-이 값은 캘리브레이션 툴의 현재 구현값이며 실제 보행용 최종 gain/current 설정을 의미하지 않는다. GUI는 기존 fault 원인을 보존하기 위해 enable 전에 자동으로 오류를 삭제하지 않는다.
+GUI는 설정을 장치 flash에 저장하지 않는다. 기존 fault 원인을 보존하기 위해 enable 전에 자동으로 오류를 삭제하지도 않는다.
 
 ## 저장 내용
 
@@ -117,19 +116,23 @@ GUI는 화면의 target만 사용하지 않고 최신 encoder feedback을 다시
 저장 예:
 
 ```yaml
+direct_position:
+  current_limit: 5.0
+  position_gain: 20.0
+  velocity_gain: 0.16
+  velocity_integrator_gain: 0.32
+
 joints:
   front_left_hip_joint:
     can_interface: can0
     can_id: 0
     direction: -1
     offset: 0.123456
-    kp: 20.0
-    kd: 0.5
 ```
 
 CAN ID, bus, direction은 기준 매핑과 달라지면 GUI가 설정을 거부한다.
 
-`kp`와 `kd` 필드는 calibration GUI가 명시적으로 사용하는 MIT hold gain이며 일반 Position Control의 position/velocity PI gain이 아니다. runtime 기본 Position Control은 GUI와 동일한 `0x009` rotor estimate를 `2π/8`로 변환한 output position과 같은 direction/offset 식을 사용한다. Secondary encoder 전용 feedback이라고 가정하지 않는다.
+`direct_position` 값은 12개 모터에 공통 적용된다. `calibration_gui`와 runtime 모두 `0x009` rotor estimate, 같은 direction/offset 변환 및 `Set_Input_Pos` 명령을 사용한다.
 
 ## 완료 후 확인
 

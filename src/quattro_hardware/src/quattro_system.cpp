@@ -53,25 +53,6 @@ bool parse_double_param(
   return true;
 }
 
-bool parse_bool_param(
-  const std::unordered_map<std::string, std::string> & params, const std::string & key,
-  bool & out, const rclcpp::Logger & logger)
-{
-  std::string text;
-  if (!get_required(params, key, text, logger)) {
-    return false;
-  }
-  if (text == "true") {
-    out = true;
-  } else if (text == "false") {
-    out = false;
-  } else {
-    RCLCPP_ERROR(logger, "Parameter '%s' must be 'true' or 'false', got '%s'", key.c_str(), text.c_str());
-    return false;
-  }
-  return true;
-}
-
 bool parse_ms_param(
   const std::unordered_map<std::string, std::string> & params, const std::string & key,
   std::chrono::milliseconds & out, const rclcpp::Logger & logger)
@@ -118,7 +99,7 @@ bool QuattroSystem::parse_hardware_parameters()
   const auto & logger = get_logger();
 
   bool ok = true;
-  ok = parse_bool_param(params, "apply_position_gains", apply_position_gains_, logger) && ok;
+  ok = parse_double_param(params, "current_limit", current_limit_, logger) && ok;
   ok = parse_double_param(params, "position_gain", position_gain_, logger) && ok;
   ok = parse_double_param(params, "velocity_gain", velocity_gain_, logger) && ok;
   ok = parse_double_param(params, "velocity_integrator_gain", velocity_integrator_gain_, logger) &&
@@ -133,8 +114,15 @@ bool QuattroSystem::parse_hardware_parameters()
   ok = parse_ms_param(params, "scheduling_warning_ms", scheduling_warning_, logger) && ok;
   ok = parse_double_param(params, "rotor_velocity_limit_rev_s", rotor_velocity_limit_rev_s_, logger) &&
     ok;
-  ok = parse_double_param(params, "motor_current_limit_a", motor_current_limit_a_, logger) && ok;
   ok = parse_ms_param(params, "telemetry_period_ms", telemetry_period_, logger) && ok;
+
+  if (ok && (!(current_limit_ > 0.0) || !(position_gain_ >= 0.0) ||
+    !(velocity_gain_ >= 0.0) || !(velocity_integrator_gain_ >= 0.0)))
+  {
+    RCLCPP_ERROR(
+      logger, "Direct Position current_limit must be positive and all gains must be non-negative");
+    ok = false;
+  }
 
   if (!ok) {
     RCLCPP_ERROR(logger, "One or more hardware_parameters failed to parse (see errors above)");
@@ -209,16 +197,6 @@ bool QuattroSystem::parse_joints()
       RCLCPP_ERROR(
         logger, "Joint '%s' gear_ratio must be positive, got %f", joint.name.c_str(),
         joint.calibration.gear_ratio);
-      return false;
-    }
-
-    if (!parse_double_param(params, "current_limit", joint.current_limit, logger)) {
-      return false;
-    }
-    if (!(joint.current_limit > 0.0)) {
-      RCLCPP_ERROR(
-        logger, "Joint '%s' current_limit must be positive, got %f", joint.name.c_str(),
-        joint.current_limit);
       return false;
     }
 
@@ -314,22 +292,20 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
   for (const auto & joint : joints_) {
     if (!motor_manager_->send_set_limits(
         joint.node_id, static_cast<float>(rotor_velocity_limit_rev_s_),
-        static_cast<float>(joint.current_limit)))
+        static_cast<float>(current_limit_)))
     {
       RCLCPP_ERROR(logger, "Failed to send Set_Limits to joint '%s'", joint.name.c_str());
       ok = false;
     }
-    if (apply_position_gains_) {
-      const bool gains_ok =
-        motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_)) &&
-        motor_manager_->send_set_vel_gains(
-        joint.node_id, static_cast<float>(velocity_gain_),
-        static_cast<float>(velocity_integrator_gain_));
-      if (!gains_ok) {
-        RCLCPP_ERROR(
-          logger, "Failed to apply position/velocity gains to joint '%s'", joint.name.c_str());
-        ok = false;
-      }
+    const bool gains_ok =
+      motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_)) &&
+      motor_manager_->send_set_vel_gains(
+      joint.node_id, static_cast<float>(velocity_gain_),
+      static_cast<float>(velocity_integrator_gain_));
+    if (!gains_ok) {
+      RCLCPP_ERROR(
+        logger, "Failed to apply position/velocity gains to joint '%s'", joint.name.c_str());
+      ok = false;
     }
   }
 

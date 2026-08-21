@@ -5,19 +5,15 @@
     name="calibration_file"
     default="../config/calibration.yaml"/>
   <xacro:arg name="simulation" default="false"/>
-  <xacro:arg name="apply_position_gains" default="false"/>
-  <xacro:arg name="position_gain" default="0.0"/>
-  <xacro:arg name="velocity_gain" default="0.0"/>
-  <xacro:arg name="velocity_integrator_gain" default="0.0"/>
   <xacro:arg name="motor_activation_interval_ms" default="100"/>
   <xacro:arg name="visual_color_override" default="false"/>
   <xacro:arg name="visual_color" default="0.1 0.1 0.1 1.0"/>
   <xacro:arg
     name="simulation_controllers"
     default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
-  <xacro:property
-    name="hardware_calibration"
-    value="${xacro.load_yaml('$(arg calibration_file)')['joints']}"/>
+  <xacro:property name="calibration" value="${xacro.load_yaml('$(arg calibration_file)')}"/>
+  <xacro:property name="hardware_calibration" value="${calibration['joints']}"/>
+  <xacro:property name="direct_position" value="${calibration['direct_position']}"/>
 
   <!--
     Mesh directory:
@@ -99,7 +95,6 @@
       <param name="direction">${hardware_calibration[name]['direction']}</param>
       <param name="offset">${hardware_calibration[name]['offset']}</param>
       <param name="gear_ratio">8.0</param>
-      <param name="current_limit">${hardware_calibration[name].get('current_limit', 5.0)}</param>
     </joint>
   </xacro:macro>
 
@@ -564,10 +559,10 @@
     <ros2_control name="QuattroSystem" type="system">
       <hardware>
         <plugin>quattro_hardware/QuattroSystem</plugin>
-        <param name="apply_position_gains">$(arg apply_position_gains)</param>
-        <param name="position_gain">$(arg position_gain)</param>
-        <param name="velocity_gain">$(arg velocity_gain)</param>
-        <param name="velocity_integrator_gain">$(arg velocity_integrator_gain)</param>
+        <param name="current_limit">${direct_position['current_limit']}</param>
+        <param name="position_gain">${direct_position['position_gain']}</param>
+        <param name="velocity_gain">${direct_position['velocity_gain']}</param>
+        <param name="velocity_integrator_gain">${direct_position['velocity_integrator_gain']}</param>
         <param name="feedback_timeout_ms">150</param>
         <param name="feedback_request_period_ms">50</param>
         <param name="heartbeat_timeout_ms">400</param>
@@ -576,7 +571,6 @@
         <param name="command_timeout_ms">250</param>
         <param name="scheduling_warning_ms">50</param>
         <param name="rotor_velocity_limit_rev_s">5.0</param>
-        <param name="motor_current_limit_a">5.0</param>
         <param name="telemetry_period_ms">500</param>
       </hardware>
       <xacro:quattro_hardware_joint name="front_left_hip_joint" lower="-1.04" upper="1.04"/>

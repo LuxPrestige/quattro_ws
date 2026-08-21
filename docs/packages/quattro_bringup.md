@@ -18,7 +18,7 @@ src/quattro_bringup/
 
 1. 로봇을 지지대에 올려 다리에 하중이 걸리지 않게 한다.
 2. 다른 CAN 송신 프로그램(캘리브레이션 도구 등)을 모두 종료한다.
-3. 실제 `calibration.yaml`이 존재하고 12개 관절의 `can_interface`/`can_id`/`direction`/`offset`/`kp`/`kd`를 확인한다.
+3. 실제 `calibration.yaml`이 존재하고 공통 Direct Position 설정 및 12개 관절의 CAN 매핑·방향·offset을 확인한다.
 4. `can0`, `can1`이 모두 500 kbit/s이며 `ERROR-ACTIVE`인지 확인한다(`ip -details -statistics link show can0`).
 5. 전원과 E-stop 수단을 준비한다.
 6. 초기 시험은 낮은 gain/current 조건에서 수행한다. 로봇을 처음 켜거나 새 calibration을 적용한 직후에는 `docs/packages/quattro_hardware.md` 6절의 단일 모터 시험부터 거친다 — `hardware.launch.py`로 곧바로 12축을 동시에 활성화하지 않는다.
@@ -30,8 +30,6 @@ src/quattro_bringup/
 | 인자 | 기본값 | 설명 |
 |---|---|---|
 | `calibration_file` | `<share>/config/calibration.yaml` | 머신별 모터 calibration |
-| `apply_position_gains` | `false` | GDS68 runtime position/velocity gain 덮어쓰기 여부 |
-| `position_gain`, `velocity_gain`, `velocity_integrator_gain` | `0.0` | `apply_position_gains=true`일 때만 사용 |
 | `motor_activation_interval_ms` | `100` | 모터 순차 활성화 안정화 간격 |
 | `controller_file` | `config/hardware_controllers.yaml` | ros2_control 컨트롤러 구성 |
 | `initial_pose_duration` | `5.0` | 초기 자세 전환 궤적 시간(초) |
@@ -53,7 +51,9 @@ Quattro는 `JointTrajectoryController`가 시간 기반 궤적을 만들고 GDS6
 
 ## `calibration.yaml`
 
-`joints.<joint_name>`마다 `can_interface`(`can0`/`can1`), `can_id`(0~11), `direction`(±1), `offset`(rad), `kp`/`kd`(관절 영점 조깅용 MIT hold gain, `calibration_gui`가 사용), 선택적 `current_limit`을 정의한다. 실제 파일은 Git에서 제외하며 `calibration.yaml.example`을 복사해 만든다. 상세 절차는 `docs/calibration.md`, CAN ID/bus 기준 매핑은 `docs/packages/quattro_hardware.md` 0절.
+`direct_position`에는 12축 공통 `current_limit`, `position_gain`, `velocity_gain`, `velocity_integrator_gain`을 정의한다. 현재 gain `20.0/0.16/0.32`는 제조사 튜닝 예시이며 검증된 factory default가 아니다. `joints.<joint_name>`에는 `can_interface`, `can_id`, `direction`, `offset`을 정의한다. 실제 파일은 Git에서 제외하며 `calibration.yaml.example`을 복사해 만든다.
+
+bringup configure는 이 공통 설정을 모터마다 한 번 적용하지만 `Save_Configuration`으로 flash에 저장하지 않는다. 활성화 이후 정상 제어 루프에서는 `Set_Input_Pos`만 전송하고 encoder/error/telemetry는 별도 읽기 요청으로 확인한다.
 
 ## `gait_visualization.launch.py` / `remote_visualization.launch.py`
 

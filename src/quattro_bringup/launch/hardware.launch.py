@@ -30,11 +30,6 @@ def launch_setup(context, *args, **kwargs):
     initial_pose_duration = LaunchConfiguration('initial_pose_duration')
     calibration_file = LaunchConfiguration('calibration_file')
     controller_file = LaunchConfiguration('controller_file')
-    apply_position_gains = LaunchConfiguration('apply_position_gains')
-    position_gain = LaunchConfiguration('position_gain')
-    velocity_gain = LaunchConfiguration('velocity_gain')
-    velocity_integrator_gain = LaunchConfiguration(
-        'velocity_integrator_gain')
     motor_activation_interval_ms = LaunchConfiguration(
         'motor_activation_interval_ms')
 
@@ -54,10 +49,6 @@ def launch_setup(context, *args, **kwargs):
                 FindExecutable(name='xacro'), ' ', xacro_file,
                 ' simulation:=false',
                 ' calibration_file:=', calibration_file,
-                ' apply_position_gains:=', apply_position_gains,
-                ' position_gain:=', position_gain,
-                ' velocity_gain:=', velocity_gain,
-                ' velocity_integrator_gain:=', velocity_integrator_gain,
                 ' motor_activation_interval_ms:=', motor_activation_interval_ms,
             ]),
             value_type=str,
@@ -216,20 +207,6 @@ def generate_launch_description() -> LaunchDescription:
             default_value=PathJoinSubstitution([
                 bringup_share, 'config', 'calibration.yaml']),
             description='Machine-specific motor calibration YAML.'),
-        DeclareLaunchArgument(
-            'apply_position_gains', default_value='false',
-            description=(
-                'Write runtime GDS68 position/velocity gains during configure. '
-                'False preserves the device values.')),
-        DeclareLaunchArgument(
-            'position_gain', default_value='0.0',
-            description='GDS68 position gain; used only when enabled.'),
-        DeclareLaunchArgument(
-            'velocity_gain', default_value='0.0',
-            description='GDS68 velocity gain; used only when enabled.'),
-        DeclareLaunchArgument(
-            'velocity_integrator_gain', default_value='0.0',
-            description='GDS68 velocity integrator gain; used only when enabled.'),
         DeclareLaunchArgument(
             'motor_activation_interval_ms', default_value='100',
             description=(

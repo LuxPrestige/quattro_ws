@@ -46,7 +46,6 @@ private:
     JointCalibration calibration;
     uint8_t node_id{0};
     std::string can_bus;
-    double current_limit{5.0};
   };
 
   bool parse_hardware_parameters();
@@ -64,10 +63,10 @@ private:
   // activated.
   void safe_stop_all();
 
-  bool apply_position_gains_{false};
-  double position_gain_{0.0};
-  double velocity_gain_{0.0};
-  double velocity_integrator_gain_{0.0};
+  double current_limit_{5.0};
+  double position_gain_{20.0};
+  double velocity_gain_{0.16};
+  double velocity_integrator_gain_{0.32};
   std::chrono::milliseconds feedback_timeout_{150};
   std::chrono::milliseconds feedback_request_period_{50};
   std::chrono::milliseconds heartbeat_timeout_{400};
@@ -76,7 +75,6 @@ private:
   std::chrono::milliseconds command_timeout_{250};
   std::chrono::milliseconds scheduling_warning_{50};
   double rotor_velocity_limit_rev_s_{5.0};
-  double motor_current_limit_a_{5.0};
   std::chrono::milliseconds telemetry_period_{500};
 
   std::vector<JointContext> joints_;

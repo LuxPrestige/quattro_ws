@@ -105,9 +105,8 @@ double motor_Nm_to_joint_Nm(double motor_Nm, const JointCalibration &);   // joi
 double joint_Nm_to_motor_Nm(double joint_Nm, const JointCalibration &);   // motor_Nm = direction * joint_Nm / gear_ratio
 
 // MIT(0x08)는 이미 출력축(gear_ratio 반영 완료) 값이라 이 세 쌍은 gear_ratio를 쓰지
-// 않는다 -- direction/offset만 적용한다. QuattroSystem은 Direct Position만
-// 쓰므로 이 쌍은 호출하지 않고, calibration_gui의 관절 영점 조깅 절차(5절)가
-// gim6010_driver의 MIT 프레임을 통해 사용한다.
+// 않는다 -- direction/offset만 적용한다. Quattro runtime과 calibration_gui는
+// Direct Position만 사용하므로 현재 이 쌍은 프로토콜 재사용 지원과 unit test에 남긴다.
 double mit_output_rad_to_joint_rad(double mit_output_rad, const JointCalibration &);
 double joint_rad_to_mit_output_rad(double joint_rad, const JointCalibration &);
 double mit_output_rad_s_to_joint_rad_s(double mit_output_rad_s, const JointCalibration &);
@@ -116,7 +115,7 @@ double mit_output_Nm_to_joint_Nm(double mit_output_Nm, const JointCalibration &)
 double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ```
 
-`Set_Limits`의 velocity/current는 모터 rotor 단위(rev/s, A)이므로 `rotor_velocity_limit_rev_s`/`motor_current_limit_a` 파라미터는 변환 없이 그대로 `gim6010_driver`에 전달한다(joint 단위가 아니다).
+`Set_Limits`의 velocity/current는 모터 rotor 단위(rev/s, A)이므로 `rotor_velocity_limit_rev_s`와 YAML의 공통 `direct_position.current_limit`은 변환 없이 전달한다.
 
 ## 2. `QuattroSystem` — `hardware_interface::SystemInterface`
 
@@ -124,8 +123,8 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 
 이 워크스페이스의 `hardware_interface`(2025년 리팩터링된 `HardwareComponentInterface` API)는 `on_init`이 `HardwareInfo`가 아니라 `HardwareComponentInterfaceParams`(내부에 `hardware_info` 포함)를 받는다. 반드시 `SystemInterface::on_init(params)`(기반 클래스, `info_` 멤버를 채운다)를 먼저 호출한 뒤 자체 파싱을 진행한다.
 
-- `info_.hardware_parameters`에서 하드웨어 전역 파라미터를 읽는다: `apply_position_gains`, `position_gain`/`velocity_gain`/`velocity_integrator_gain`, `feedback_timeout_ms`, `feedback_request_period_ms`, `heartbeat_timeout_ms`, `startup_timeout_ms`, `motor_activation_interval_ms`, `command_timeout_ms`, `scheduling_warning_ms`, `rotor_velocity_limit_rev_s`, `motor_current_limit_a`, `telemetry_period_ms`(전체 목록과 값은 `quattro.urdf.xacro`의 `<ros2_control name="QuattroSystem">` 블록, `docs/packages/quattro_description.md`). 파싱 실패는 각각 로그를 남기고 `on_init`을 실패시킨다(누락된 키, 숫자로 파싱 안 되는 값, 음수 timeout 등).
-- `info_.joints`를 순회하며 관절마다 `can_interface`/`can_id`/`direction`/`offset`/`gear_ratio`/`current_limit`을 읽어 `JointCalibration`과 `MotorRoute`(node_id=`can_id`, bus=`can_interface`)를 구성한다. `direction`은 정확히 `1.0`/`-1.0`만 허용, `can_id`는 `[0, kMaxNodeId]`(`gim6010_driver`), 중복 `can_id`는 거부한다.
+- `info_.hardware_parameters`에서 YAML 기반 공통 `current_limit`과 Direct Position gain, timeout, rotor velocity limit을 읽는다. 파싱 실패나 범위 오류는 로그를 남기고 `on_init`을 실패시킨다.
+- `info_.joints`를 순회하며 관절마다 `can_interface`/`can_id`/`direction`/`offset`/`gear_ratio`를 읽어 `JointCalibration`과 `MotorRoute`를 구성한다. `direction`은 정확히 `1.0`/`-1.0`만 허용하고 중복 `can_id`는 거부한다.
 - 관절당 command interface는 `position` 1개, state interface는 `position`/`velocity`/`effort` 3개를 기대한다. `info_.joints[i]`의 실제 개수/이름이 이와 다르면 `on_init`을 실패시킨다(URDF-하드웨어 파라미터 불일치를 조용히 넘기지 않는다).
 - **현재 구현은 joint 개수를 정확히 12개로, 또는 `can_id`/`direction`을 0절의 기준 매핑과 일치하도록 강제하지 않는다**(최소 1개 이상만 요구) — 그 엄격한 검증은 `calibration_gui`(5절)에서만 한다. `QuattroSystem` 자체는 구조적 유효성(중복 없음, 범위 안, interface 계약 일치)만 검증한다.
 
@@ -134,8 +133,9 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ### `on_configure`
 
 - 각 joint의 `can_interface`에서 고유한 bus 이름 집합을 뽑아 `gim6010_driver::MotorManager`를 생성하고 연다(bus 이름은 코드에 하드코딩하지 않는다 — 몇 개든, 이름이 무엇이든 동작). 실패하면 `CallbackReturn::ERROR`.
-- `apply_position_gains`가 `true`면 `Set_Pos_Gain`/`Set_Vel_Gains`를 전송한다. 기본(`false`)은 장치 값을 보존한다. 매뉴얼 예시값(`20.0/0.16/0.32`)은 튜닝 절차의 예시일 뿐 factory default라는 근거가 없다.
-- `Set_Limits(rotor_velocity_limit_rev_s, motor_current_limit_a)`를 모든 모터에 전송한다.
+- YAML의 공통 값으로 모든 모터에 `Set_Pos_Gain`/`Set_Vel_Gains`를 전송한다. 현재 `20.0/0.16/0.32`는 제조사 튜닝 예시일 뿐 factory default라는 근거가 없다.
+- `Set_Limits(rotor_velocity_limit_rev_s, current_limit)`를 모든 모터에 전송한다.
+- 이 runtime 설정에는 `Save_Configuration(0x1F)`을 사용하지 않는다. 매 bringup configure에서 RAM 설정을 다시 적용하므로 flash 쓰기를 반복하지 않고 YAML을 단일 기준으로 유지한다.
 - **`Clear_Errors`를 자동으로 호출하지 않는다**(4절) — 기존 fault가 있으면 이후 `on_activate`가 거부해야 한다.
 
 ### `on_activate` — 순차 활성화
@@ -199,7 +199,7 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 `docs/calibration.md`에 이미 기술된 두 활성화 모드(선택 모터만 활성화 / 12개 전체 hold)를 그대로 구현한다. `ros2_control`/`controller_manager`를 거치지 않고 `gim6010_driver::MotorManager`를 직접 사용하는 독립 실행 파일이다(캘리브레이션은 `controller_manager`와 동시에 실행하지 않음 — `docs/calibration.md` 안전 조건).
 
 - X11 GUI(Qt 계열, `docs/development_environment.md`의 X11 forwarding 절차로 원격 실행).
-- 활성화 시 GDS68 rotor velocity/current limit을 캘리브레이션 전용 보수적 값으로 설정한다(최종 보행용 gain/limit과 무관 — `docs/calibration.md`).
+- 활성화 시 YAML의 공통 Direct Position current limit 및 position/velocity gain을 적용하고 캘리브레이션 전용 rotor velocity limit을 설정한다.
 - 저장 시 화면 target이 아니라 최신 encoder feedback을 다시 읽어 `offset = direction * current_motor_position`을 계산한다.
 - 저장 대상 `calibration.yaml`의 `can_interface`/`can_id`/`direction`이 기준 매핑(0절)과 다르면 저장을 거부한다.
 - enable 전 fault를 자동으로 지우지 않는다(`quattro_hardware`의 나머지 코드와 동일한 원칙).

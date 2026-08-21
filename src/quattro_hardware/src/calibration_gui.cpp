@@ -3,11 +3,9 @@
 // talks to gim6010_driver directly and must not run at the same time as
 // hardware.launch.py (docs/calibration.md safety condition).
 //
-// Always drives motors via MIT (cmd 0x08) regardless of the runtime
-// hardware_control_method, using each joint's calibration.yaml kp/kd as the
-// MIT hold gain -- this is a fixed property of the calibration procedure
-// itself (docs/calibration.md), not of whatever control method the robot
-// will run afterward.
+// Uses the same Direct Position path as runtime bringup. The calibration
+// file's common current limit and position/velocity gains are applied before
+// an axis enters closed-loop control.
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -42,7 +40,6 @@ namespace
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kJogStepRad = kPi / 180.0;  // 1 degree
 constexpr float kCalibrationVelocityLimitRevS = 5.0F;
-constexpr float kCalibrationCurrentLimitA = 10.0F;
 constexpr double kFixedGearRatio = 8.0;
 
 // Fixed hardware wiring/mounting facts (docs/packages/quattro_hardware.md
@@ -78,20 +75,40 @@ struct CalibratedJoint
   uint8_t can_id{0};
   double direction{1.0};
   double offset{0.0};
-  double current_limit{5.0};
-  double kp{0.0};
-  double kd{0.0};
 };
 
-std::vector<CalibratedJoint> load_calibration(const std::string & path)
+struct CalibrationData
+{
+  double current_limit{0.0};
+  double position_gain{0.0};
+  double velocity_gain{0.0};
+  double velocity_integrator_gain{0.0};
+  std::vector<CalibratedJoint> joints;
+};
+
+CalibrationData load_calibration(const std::string & path)
 {
   const YAML::Node root = YAML::LoadFile(path);
+  const YAML::Node direct_position = root["direct_position"];
+  if (!direct_position) {
+    throw std::runtime_error("calibration file has no top-level 'direct_position' key: " + path);
+  }
   const YAML::Node joints_node = root["joints"];
   if (!joints_node) {
     throw std::runtime_error("calibration file has no top-level 'joints' key: " + path);
   }
 
-  std::vector<CalibratedJoint> result;
+  CalibrationData result;
+  result.current_limit = direct_position["current_limit"].as<double>();
+  result.position_gain = direct_position["position_gain"].as<double>();
+  result.velocity_gain = direct_position["velocity_gain"].as<double>();
+  result.velocity_integrator_gain = direct_position["velocity_integrator_gain"].as<double>();
+  if (!(result.current_limit > 0.0) || result.position_gain < 0.0 ||
+    result.velocity_gain < 0.0 || result.velocity_integrator_gain < 0.0)
+  {
+    throw std::runtime_error(
+      "Direct Position current_limit must be positive and gains must be non-negative");
+  }
   for (const auto & canonical : kCanonicalJoints) {
     const YAML::Node joint_node = joints_node[canonical.name];
     if (!joint_node) {
@@ -105,9 +122,6 @@ std::vector<CalibratedJoint> load_calibration(const std::string & path)
     joint.can_id = static_cast<uint8_t>(joint_node["can_id"].as<int>());
     joint.direction = joint_node["direction"].as<double>();
     joint.offset = joint_node["offset"].as<double>();
-    joint.current_limit = joint_node["current_limit"] ? joint_node["current_limit"].as<double>() : 5.0;
-    joint.kp = joint_node["kp"].as<double>();
-    joint.kd = joint_node["kd"].as<double>();
 
     if (joint.can_bus != canonical.bus || joint.can_id != canonical.can_id ||
       joint.direction != canonical.direction)
@@ -117,14 +131,7 @@ std::vector<CalibratedJoint> load_calibration(const std::string & path)
         "mapping (docs/packages/quattro_hardware.md section 0) -- refusing to load a file that "
         "may describe the wrong robot");
     }
-    if (joint.kp < 0.0 || joint.kp > gim6010_driver::kMitKpMax || joint.kd < 0.0 ||
-      joint.kd > gim6010_driver::kMitKdMax)
-    {
-      throw std::runtime_error(
-        "joint '" + joint.name + "' kp/kd is outside the GIM6010 MIT range");
-    }
-
-    result.push_back(joint);
+    result.joints.push_back(joint);
   }
   return result;
 }
@@ -139,9 +146,6 @@ void save_calibration(const std::string & path, const std::vector<CalibratedJoin
     joint_node["can_id"] = static_cast<int>(joint.can_id);
     joint_node["direction"] = static_cast<int>(joint.direction);
     joint_node["offset"] = joint.offset;
-    joint_node["current_limit"] = joint.current_limit;
-    joint_node["kp"] = joint.kp;
-    joint_node["kd"] = joint.kd;
   }
 
   const std::string tmp_path = path + ".tmp";
@@ -162,8 +166,13 @@ void save_calibration(const std::string & path, const std::vector<CalibratedJoin
 class CalibrationWindow : public QWidget
 {
 public:
-  CalibrationWindow(std::string calibration_file, std::vector<CalibratedJoint> joints)
-  : calibration_file_(std::move(calibration_file)), joints_(std::move(joints))
+  CalibrationWindow(std::string calibration_file, CalibrationData calibration)
+  : calibration_file_(std::move(calibration_file)),
+    current_limit_(calibration.current_limit),
+    position_gain_(calibration.position_gain),
+    velocity_gain_(calibration.velocity_gain),
+    velocity_integrator_gain_(calibration.velocity_integrator_gain),
+    joints_(std::move(calibration.joints))
   {
     enabled_.assign(joints_.size(), false);
     target_joint_rad_.assign(joints_.size(), 0.0);
@@ -293,16 +302,12 @@ private:
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
     const auto calibration = session_calibration(joint);
-    gim6010_driver::MitCommand command;
-    command.position_rad =
-      quattro_hardware::joint_rad_to_mit_output_rad(target_joint_rad_[static_cast<size_t>(index)], calibration);
-    command.velocity_rad_s = 0.0;
-    command.kp = joint.kp;
-    command.kd = joint.kd;
-    command.torque_Nm = 0.0;
-    if (!motor_manager_->send_mit_command(joint.can_id, command)) {
+    gim6010_driver::SetInputPosCommand command;
+    command.position_rev = static_cast<float>(quattro_hardware::joint_rad_to_motor_rev(
+      target_joint_rad_[static_cast<size_t>(index)], calibration));
+    if (!motor_manager_->send_set_input_pos(joint.can_id, command)) {
       status_label_->setText(
-        QString("WARNING: %1 hold command rejected (outside MIT protocol range)")
+        QString("WARNING: %1 Direct Position hold command rejected")
         .arg(QString::fromStdString(joint.name)));
     }
   }
@@ -310,7 +315,12 @@ private:
   void set_motor_closed_loop(int index)
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
-    motor_manager_->send_set_limits(joint.can_id, kCalibrationVelocityLimitRevS, kCalibrationCurrentLimitA);
+    motor_manager_->send_set_limits(
+      joint.can_id, kCalibrationVelocityLimitRevS, static_cast<float>(current_limit_));
+    motor_manager_->send_set_pos_gain(joint.can_id, static_cast<float>(position_gain_));
+    motor_manager_->send_set_vel_gains(
+      joint.can_id, static_cast<float>(velocity_gain_),
+      static_cast<float>(velocity_integrator_gain_));
 
     double motor_rev = 0.0;
     if (!request_fresh_motor_rev(index, motor_rev)) {
@@ -327,7 +337,7 @@ private:
     // enabling.
     motor_manager_->send_set_controller_mode(
       joint.can_id, gim6010_driver::ControlMode::kPositionControl,
-      gim6010_driver::InputMode::kMitMotionControl);
+      gim6010_driver::InputMode::kDirect);
     motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kClosedLoopControl);
     enabled_[static_cast<size_t>(index)] = true;
     send_hold_command(index);
@@ -500,6 +510,10 @@ private:
   enum class Mode { kNone, kSingle, kAll };
 
   std::string calibration_file_;
+  double current_limit_{0.0};
+  double position_gain_{0.0};
+  double velocity_gain_{0.0};
+  double velocity_integrator_gain_{0.0};
   std::vector<CalibratedJoint> joints_;
   std::vector<std::string> buses_;
   std::unique_ptr<gim6010_driver::MotorManager> motor_manager_;
@@ -537,16 +551,16 @@ int main(int argc, char ** argv)
     return 1;
   }
 
-  std::vector<CalibratedJoint> joints;
+  CalibrationData calibration;
   try {
-    joints = load_calibration(calibration_file);
+    calibration = load_calibration(calibration_file);
   } catch (const std::exception & error) {
     QMessageBox::critical(
       nullptr, "Calibration", QString("Failed to load calibration file: %1").arg(error.what()));
     return 1;
   }
 
-  CalibrationWindow window(calibration_file, std::move(joints));
+  CalibrationWindow window(calibration_file, std::move(calibration));
   window.show();
   return app.exec();
 }
