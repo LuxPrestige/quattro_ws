@@ -10,6 +10,8 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QFontDatabase>
+#include <QFontMetrics>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -23,9 +25,11 @@
 #include <yaml-cpp/yaml.h>
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -41,6 +45,26 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kJogStepRad = kPi / 180.0;  // 1 degree
 constexpr float kCalibrationVelocityLimitRevS = 5.0F;
 constexpr double kFixedGearRatio = 8.0;
+// The motors broadcast Get_Encoder_Estimates (0x09) on their own, so this
+// GUI never requests one -- it only judges whether what has already arrived
+// is recent enough to act on. Generous relative to the broadcast period so
+// a few dropped frames do not read as "no feedback".
+constexpr std::chrono::milliseconds kFeedbackTimeout{100};
+// Heartbeat is broadcast at 100ms, so this tolerates three misses before
+// the axis-state indicator gives up and says so.
+constexpr std::chrono::milliseconds kHeartbeatTimeout{400};
+
+// Explicit foreground *and* background on the state chip: the Qt palette
+// this runs under is not known ahead of time, and a bare coloured
+// foreground can end up unreadable on a dark theme. These are the only
+// colours in the GUI, so they are spelled out here rather than in a
+// stylesheet file.
+constexpr const char * kClosedLoopChipStyle =
+  "background-color: #1b7f3b; color: #ffffff; padding: 4px; font-weight: bold;";
+constexpr const char * kIdleChipStyle =
+  "background-color: #b3261e; color: #ffffff; padding: 4px; font-weight: bold;";
+constexpr const char * kUnknownChipStyle =
+  "background-color: #6b6b6b; color: #ffffff; padding: 4px; font-weight: bold;";
 
 // Fixed hardware wiring/mounting facts (docs/packages/quattro_hardware.md
 // section 0) -- not user-configurable. A calibration.yaml that disagrees
@@ -198,6 +222,8 @@ public:
 
     selected_index_ = joints_.empty() ? -1 : 0;
     update_status_label();
+    update_state_label();
+    update_measured_label();
   }
 
 protected:
@@ -238,6 +264,21 @@ private:
     reload_btn_ = new QPushButton("Reload Calibration from File", this);
     status_label_ = new QLabel(this);
     status_label_->setWordWrap(true);
+    measured_label_ = new QLabel(this);
+    // Fixed-width digits: this label is refreshed every tick, and a
+    // proportional font makes the numbers jitter sideways as they change,
+    // which is exactly the wrong behaviour for a readout you watch while
+    // jogging a joint by hand.
+    measured_label_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    measured_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // The readout is always exactly four lines (the no-feedback text is
+    // padded to match), so reserve them up front. Without this the label
+    // only gets the height it happened to need when the window was first
+    // laid out, and the last line -- the raw motor reading -- is silently
+    // clipped once feedback starts arriving.
+    measured_label_->setMinimumHeight(QFontMetrics(measured_label_->font()).lineSpacing() * 4);
+    state_label_ = new QLabel(this);
+    state_label_->setAlignment(Qt::AlignCenter);
 
     connect(enable_selected_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_enable_selected);
     connect(
@@ -278,6 +319,13 @@ private:
     layout->addLayout(jog_layout);
 
     layout->addWidget(save_btn_);
+
+    auto * live_group = new QGroupBox("Live feedback", this);
+    auto * live_layout = new QVBoxLayout(live_group);
+    live_layout->addWidget(state_label_);
+    live_layout->addWidget(measured_label_);
+    layout->addWidget(live_group);
+
     layout->addWidget(status_label_);
   }
 
@@ -290,21 +338,37 @@ private:
     return quattro_hardware::JointCalibration{joint.direction, 0.0, kFixedGearRatio};
   }
 
-  bool request_fresh_motor_rev(int index, double & out_motor_rev)
+  // Blocks until a reading newer than kFeedbackTimeout has arrived for this
+  // joint, or ~200ms elapses. Nothing is requested: the motors broadcast
+  // 0x09 by themselves, so the only thing worth checking is freshness.
+  // Freshness is what makes this safe to call before enabling -- a stale
+  // cached estimate left over from earlier in the session would otherwise
+  // become the hold target and jerk the joint back to where it used to be.
+  bool read_fresh_motor_rev(int index, double & out_motor_rev)
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
-    motor_manager_->request_encoder_estimate(joint.can_id);
     for (int attempt = 0; attempt < 20; ++attempt) {
-      QThread::msleep(10);
       motor_manager_->poll();
-      if (auto * motor = motor_manager_->motor(joint.can_id)) {
-        if (const auto estimate = motor->last_encoder_estimate()) {
-          out_motor_rev = estimate->position_rev;
-          return true;
-        }
+      if (const auto reading = fresh_motor_reading(joint)) {
+        out_motor_rev = reading->position_rev;
+        return true;
       }
+      QThread::msleep(10);
     }
     return false;
+  }
+
+  // The non-blocking half of the same idea, used by the live display.
+  std::optional<gim6010_driver::EncoderEstimate> fresh_motor_reading(
+    const CalibratedJoint & joint) const
+  {
+    const auto * motor = motor_manager_->motor(joint.can_id);
+    if (motor == nullptr ||
+      !motor->has_fresh_feedback(kFeedbackTimeout, std::chrono::steady_clock::now()))
+    {
+      return std::nullopt;
+    }
+    return motor->last_encoder_estimate();
   }
 
   void send_hold_command(int index)
@@ -332,7 +396,7 @@ private:
       static_cast<float>(velocity_integrator_gain_));
 
     double motor_rev = 0.0;
-    if (!request_fresh_motor_rev(index, motor_rev)) {
+    if (!read_fresh_motor_rev(index, motor_rev)) {
       QMessageBox::warning(
         this, "Calibration",
         QString("No encoder feedback from '%1' -- not enabling").arg(QString::fromStdString(joint.name)));
@@ -501,7 +565,7 @@ private:
     auto & joint = joints_[static_cast<size_t>(selected_index_)];
 
     double motor_rev = 0.0;
-    if (!request_fresh_motor_rev(selected_index_, motor_rev)) {
+    if (!read_fresh_motor_rev(selected_index_, motor_rev)) {
       QMessageBox::warning(this, "Calibration", "No fresh encoder feedback -- not saving.");
       return;
     }
@@ -586,6 +650,130 @@ private:
         send_hold_command(static_cast<int>(i));
       }
     }
+    update_state_label();
+    update_measured_label();
+  }
+
+  // Colour-coded axis state of the selected joint, driven by the motor's own
+  // Heartbeat rather than by enabled_. enabled_ only records that we asked
+  // for closed loop; a motor that faults drops back to idle by itself and
+  // never tells us, so colouring the request instead of the reported state
+  // would show green on a joint that has actually gone limp -- exactly the
+  // case this indicator exists to catch.
+  void update_state_label()
+  {
+    if (selected_index_ < 0) {
+      state_label_->setStyleSheet(kUnknownChipStyle);
+      state_label_->setText("NO JOINT SELECTED");
+      return;
+    }
+    const auto & joint = joints_[static_cast<size_t>(selected_index_)];
+    const auto * motor = motor_manager_->motor(joint.can_id);
+    const auto heartbeat = motor != nullptr &&
+      motor->has_fresh_heartbeat(kHeartbeatTimeout, std::chrono::steady_clock::now()) ?
+      motor->last_heartbeat() :
+      std::nullopt;
+    if (!heartbeat) {
+      // Grey, not red: "the motor is not talking to us" and "the motor says
+      // it is idle" are different problems and must not look the same.
+      state_label_->setStyleSheet(kUnknownChipStyle);
+      state_label_->setText("NO HEARTBEAT");
+      return;
+    }
+
+    QString text;
+    switch (heartbeat->axis_state) {
+      case gim6010_driver::AxisState::kClosedLoopControl:
+        state_label_->setStyleSheet(kClosedLoopChipStyle);
+        text = "CLOSED LOOP";
+        break;
+      case gim6010_driver::AxisState::kIdle:
+        state_label_->setStyleSheet(kIdleChipStyle);
+        text = "IDLE";
+        break;
+      default:
+        // Calibration/undefined states are neither of the two the operator
+        // is looking for, so they get their own colour instead of being
+        // rounded to the nearer one.
+        state_label_->setStyleSheet(kUnknownChipStyle);
+        text = QString("AXIS STATE %1")
+          .arg(static_cast<uint32_t>(heartbeat->axis_state));
+        break;
+    }
+    if (heartbeat->axis_error != 0) {
+      text += QString("   fault 0x%1").arg(heartbeat->axis_error, 8, 16, QChar('0'));
+    }
+    state_label_->setText(text);
+  }
+
+  // Live readout of the selected joint, refreshed every timer tick off the
+  // motors' own 0x09 broadcast. Three frames are shown because calibration
+  // needs all three and they only agree once the joint is calibrated:
+  //   saved  -- angle in the calibration file's frame (offset applied).
+  //             This is the number that reads 0 at the saved zero, so it is
+  //             what you watch when checking or re-finding a zero.
+  //   session -- angle relative to wherever the motor was when it was
+  //             enabled, i.e. the same frame the jog target lives in.
+  //   motor  -- the raw rotor value straight off the bus, for cross-checking
+  //             against candump when something looks wrong.
+  void update_measured_label()
+  {
+    if (selected_index_ < 0) {
+      measured_label_->setText("No joint selected.");
+      return;
+    }
+    const auto & joint = joints_[static_cast<size_t>(selected_index_)];
+    const auto reading = fresh_motor_reading(joint);
+    if (!reading) {
+      // Padded to the same four lines as the normal readout: this label is
+      // rewritten every tick, and a changing line count makes the whole
+      // window resize under the operator's cursor as feedback comes and
+      // goes.
+      measured_label_->setText(
+        QString("%1  (node %2 on %3)\n"
+        "no feedback -- nothing newer than %4 ms has arrived\n"
+        "this motor is either not broadcasting Get_Encoder_Estimates (0x09)\n"
+        "or has dropped off the bus")
+        .arg(QString::fromStdString(joint.name))
+        .arg(joint.can_id)
+        .arg(QString::fromStdString(joint.can_bus))
+        .arg(kFeedbackTimeout.count()));
+      return;
+    }
+
+    const double motor_rev = reading->position_rev;
+    const quattro_hardware::JointCalibration saved_frame{
+      joint.direction, joint.offset, kFixedGearRatio};
+    const double saved_deg =
+      quattro_hardware::motor_rev_to_joint_rad(motor_rev, saved_frame) * 180.0 / kPi;
+    const double session_deg =
+      quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint)) * 180.0 / kPi;
+    const double target_deg =
+      target_joint_rad_[static_cast<size_t>(selected_index_)] * 180.0 / kPi;
+    const double session_vel_deg_s =
+      quattro_hardware::motor_rev_s_to_joint_rad_s(
+      reading->velocity_rev_s, session_calibration(joint)) * 180.0 / kPi;
+
+    measured_label_->setText(
+      QString("%1  (node %2 on %3)\n"
+      "saved   %4 deg\n"
+      "session %5 deg   target %6 deg   error %7\n"
+      "motor   %8 rev   %9 deg/s")
+      .arg(QString::fromStdString(joint.name))
+      .arg(joint.can_id)
+      .arg(QString::fromStdString(joint.can_bus))
+      .arg(saved_deg, 9, 'f', 3)
+      .arg(session_deg, 9, 'f', 3)
+      .arg(target_deg, 9, 'f', 3)
+      // Only meaningful while the motor is actually holding: when it is
+      // idle the target is whatever was last commanded and the joint is
+      // free to sit anywhere, so the difference is not a tracking error.
+      .arg(
+        enabled_[static_cast<size_t>(selected_index_)] ?
+        QString("%1 deg").arg(session_deg - target_deg, 9, 'f', 3) :
+        QString("idle").rightJustified(13))
+      .arg(motor_rev, 10, 'f', 6)
+      .arg(session_vel_deg_s, 8, 'f', 2));
   }
 
   enum class Mode { kNone, kSingle, kAll };
@@ -615,6 +803,8 @@ private:
   QPushButton * save_btn_{nullptr};
   QPushButton * reload_btn_{nullptr};
   QLabel * status_label_{nullptr};
+  QLabel * measured_label_{nullptr};
+  QLabel * state_label_{nullptr};
   QTimer * timer_{nullptr};
 };
 

@@ -137,7 +137,6 @@ bool QuattroSystem::parse_hardware_parameters()
   ok = parse_double_param(params, "velocity_integrator_gain", velocity_integrator_gain_, logger) &&
     ok;
   ok = parse_ms_param(params, "feedback_timeout_ms", feedback_timeout_, logger) && ok;
-  ok = parse_ms_param(params, "feedback_request_period_ms", feedback_request_period_, logger) && ok;
   ok = parse_ms_param(params, "heartbeat_timeout_ms", heartbeat_timeout_, logger) && ok;
   ok = parse_ms_param(params, "startup_timeout_ms", startup_timeout_, logger) && ok;
   ok = parse_ms_param(params, "motor_activation_interval_ms", motor_activation_interval_, logger) &&
@@ -382,11 +381,6 @@ bool QuattroSystem::wait_for_all_motors_fresh_feedback(std::chrono::milliseconds
   }
 
   while (!pending.empty() && std::chrono::steady_clock::now() < deadline) {
-    for (const auto & joint : joints_) {
-      if (pending.count(joint.node_id) != 0) {
-        motor_manager_->request_encoder_estimate(joint.node_id);
-      }
-    }
     std::this_thread::sleep_for(kPollInterval);
     motor_manager_->poll();
 
@@ -548,15 +542,15 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
   }
 
   // Sequentially activating all 12 joints (motor_activation_interval_ms
-  // each) takes well over feedback_timeout_ms in total, and nothing
-  // re-requests an already-activated joint's encoder estimate while later
-  // joints are still being activated -- so by the time this loop finishes,
-  // the earliest-activated joints' feedback is already older than
-  // feedback_timeout_ms (observed on real hardware: read()'s first cycle
+  // each) takes well over feedback_timeout_ms in total, and nothing drains
+  // the CAN sockets while that loop runs -- freshness is stamped when a
+  // frame is dispatched, not when the motor sent it, so however fast the
+  // motors broadcast, every joint's feedback still reads stale by the time
+  // the loop finishes (observed on real hardware: read()'s first cycle
   // after activation immediately flagged most joints "stale feedback" and
-  // safe-stopped everything moments after a successful activation). Refresh
-  // every joint's feedback here, before handing control back to read(), so
-  // the normal read() polling cadence starts from fresh timestamps.
+  // safe-stopped everything moments after a successful activation). Drain
+  // and re-stamp every joint's feedback here, before handing control back
+  // to read(), so read() starts from fresh timestamps.
   if (!wait_for_all_motors_fresh_feedback(startup_timeout_)) {
     RCLCPP_ERROR(
       logger, "Feedback went stale for one or more joints immediately after sequential "
@@ -568,7 +562,6 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
   consecutive_write_failures_.assign(joints_.size(), 0);
   active_ = true;
   last_write_time_ = std::chrono::steady_clock::now();
-  last_feedback_request_time_ = last_write_time_;
   RCLCPP_INFO(logger, "QuattroSystem activated: %zu joints in closed-loop control", joints_.size());
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -597,27 +590,6 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
   has_prior_read_time_ = true;
 
   motor_manager_->poll();
-
-  if (now - last_feedback_request_time_ >= feedback_request_period_) {
-    for (const auto & joint : joints_) {
-      // A few motors on this firmware broadcast Get_Encoder_Estimates on
-      // their own at a much higher rate than we would ever ask for (RxSdo
-      // does not respond on this firmware, so there is no way to configure
-      // which -- docs/packages/gim6010_driver.md section 0). dispatch()
-      // updates the same "last feedback" timestamp regardless of whether a
-      // reading was requested or arrived unprompted, so if it is already
-      // fresher than what we're about to ask for, requesting again only
-      // adds bus load for nothing. This has no node list to maintain: it
-      // just naturally stops polling whichever motors happen to keep
-      // themselves fresh on their own.
-      const auto * motor = motor_manager_->motor(joint.node_id);
-      if (motor != nullptr && motor->has_fresh_feedback(feedback_request_period_, now)) {
-        continue;
-      }
-      motor_manager_->request_encoder_estimate(joint.node_id);
-    }
-    last_feedback_request_time_ = now;
-  }
 
   bool faulted = false;
   for (const auto & joint : joints_) {

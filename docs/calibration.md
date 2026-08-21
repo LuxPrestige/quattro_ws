@@ -80,7 +80,7 @@ ros2 run quattro_hardware calibration_gui \
 
 1. 관절을 선택한다.
 2. `Enable Selected Motor`를 누른다.
-3. 현재 encoder 위치를 읽고 해당 위치를 hold한다.
+3. 브로드캐스트로 도착한 최신 encoder 위치(100ms 이내)를 읽고 해당 위치를 hold한다.
 4. `-1 deg`, `+1 deg`로 joint zero를 맞춘다.
 5. `Save Current Position as Zero`를 누른다.
 6. 저장 후 선택 모터는 비활성화된다.
@@ -90,7 +90,7 @@ ros2 run quattro_hardware calibration_gui \
 ### 12개 모터 전체 hold
 
 1. `Enable All Motors`를 누른다.
-2. 12개 모터의 현재 encoder 위치를 읽는다.
+2. 12개 모터의 현재 encoder 위치를 읽는다(각 모터의 최신 브로드캐스트 값).
 3. 각 모터를 현재 위치에서 hold한다.
 4. 관절 하나를 선택한다.
 5. 선택한 관절만 `-1 deg`, `+1 deg`로 조정한다.
@@ -109,6 +109,34 @@ ros2 run quattro_hardware calibration_gui \
 4. 결과가 맞으면 `Save Current Position as Zero`로 새 offset을 저장한다(안 맞으면 그냥 `Disable Selected Motor`로 끄면 파일은 바뀌지 않는다).
 
 내부적으로 offset은 CAN으로 전송되지 않고 GUI가 목표각을 계산할 때만 쓰인다 — `Move to Saved Zero`는 저장된 offset을 이번 활성화 세션의 목표각으로 변환해 `Set_Input_Pos`를 보내는 것뿐이다.
+
+### `Live feedback` — 현재 위치 실시간 표시
+
+창 아래 `Live feedback` 그룹은 **선택된 관절의 axis state와 현재 위치를 50ms마다 갱신해 보여준다.**
+
+맨 위 색상 표시줄은 axis state다 — **`CLOSED LOOP`이면 초록 배경, `IDLE`이면 빨강 배경**(둘 다 흰 글자). 색은 Qt 스타일시트로만 칠하며 별도 이미지 리소스를 쓰지 않는다. 이 색은 **모터가 보내는 `Heartbeat(0x01)`의 `axis_state` 실측값**을 따르지, GUI가 "Enable을 눌렀다"고 기억하는 상태를 따르지 않는다 — fault로 closed loop에서 떨어져 나간 모터는 GUI 입장에선 여전히 enabled지만 실제로는 힘이 빠져 있고, 그 경우를 잡아내는 것이 이 표시의 목적이기 때문이다.
+
+- 초록 `CLOSED LOOP` — 모터가 실제로 closed-loop 제어 중(위치를 잡고 있다).
+- 빨강 `IDLE` — 모터가 idle. 손으로 돌릴 수 있는 상태다.
+- 회색 `NO HEARTBEAT` — 400ms 이상 heartbeat가 없다. "모터가 idle이라고 말한 것"과 "모터가 아예 응답하지 않는 것"은 다른 문제라서 빨강으로 합치지 않는다.
+- 회색 `AXIS STATE n` — calibration 등 위 둘 중 어느 쪽도 아닌 상태.
+- `axis_error`가 0이 아니면 상태 뒤에 `fault 0x........`가 붙는다.
+
+그 아래는 위치 표시다. 모터가 `Get_Encoder_Estimates(0x09)`를 자동으로 브로드캐스트하므로(`docs/packages/gim6010_driver.md` 0절) GUI는 요청 없이 받은 값을 그대로 표시한다. 세 가지 좌표계를 함께 보여주는데, 관절이 캘리브레이션되기 전에는 이 셋이 서로 다르기 때문이다.
+
+```text
+CLOSED LOOP
+front_left_hip_joint  (node 0 on can0)
+saved     -1.984 deg
+session    0.016 deg   target     0.000 deg   error     0.016 deg
+motor   -0.038712 rev      0.00 deg/s
+```
+
+- `saved` — `calibration.yaml`에 저장된 offset을 적용한 각도. **저장된 zero에서 0이 되는 값**이므로, 기존 영점을 확인하거나 `Move to Saved Zero` 결과를 검증할 때 보는 숫자다.
+- `session` — 모터를 활성화한 순간을 0으로 잡은 각도. `-1 deg`/`+1 deg` 조깅의 `target`이 사는 좌표계와 같다. `error`는 `session - target`으로, 모터가 지시한 목표를 실제로 따라갔는지 본다(GUI가 이 관절을 켜지 않은 상태에서는 목표가 의미 없으므로 `idle`로 표시된다).
+- `motor` — 버스에서 온 로터 원값(rev)과 속도(관절 환산 deg/s). `candump`로 직접 본 값과 대조할 때 쓴다.
+
+feedback이 100ms 이상 끊기면 `no feedback`으로 표시된다 — 해당 모터에 `0x09` 자동 송신 설정이 안 들어갔거나 버스에서 이탈했다는 뜻이다.
 
 ### `Reload Calibration from File`
 

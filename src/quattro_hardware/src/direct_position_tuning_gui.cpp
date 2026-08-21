@@ -266,11 +266,12 @@ private:
   bool read_fresh_position(const Joint & joint, double & joint_rad)
   {
     // Get_Error (0x03) goes unanswered on this firmware even though
-    // Get_Encoder_Estimates (0x09) and Heartbeat (0x01) both respond
-    // normally (confirmed on the bus with candump/cansend against node 0-2).
+    // Get_Encoder_Estimates (0x09) and Heartbeat (0x01) both arrive on
+    // their own (confirmed on the bus with candump against node 0-2).
     // Heartbeat already carries axis_error, so use that for the fault check
     // instead of blocking forever on a response that never arrives.
-    manager_->request_encoder_estimate(joint.node_id);
+    // Nothing is requested here: 0x09 is broadcast by the motors, so this
+    // only waits for one to land.
     for (int attempt = 0; attempt < 20; ++attempt) {
       QThread::msleep(10);
       manager_->poll();
@@ -413,7 +414,6 @@ private:
       return;
     }
     const auto & joint = config_.joints[static_cast<size_t>(index)];
-    manager_->request_encoder_estimate(joint.node_id);
     const auto * motor = manager_->motor(joint.node_id);
     if (!motor || !motor->last_encoder_estimate()) {
       measurement_->setText("No feedback");

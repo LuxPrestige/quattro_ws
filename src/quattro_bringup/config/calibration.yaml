@@ -11,8 +11,8 @@ joints:
   front_right_upper_leg_joint: {can_interface: can0, can_id: 4, direction: 1, offset: -0.53865870189134479}
   front_right_lower_leg_joint: {can_interface: can0, can_id: 5, direction: 1, offset: -0.66539094399791976}
   back_left_hip_joint: {can_interface: can1, can_id: 6, direction: 1, offset: 0.0}
-  back_left_upper_leg_joint: {can_interface: can1, can_id: 7, direction: -1, offset: 0.10016059394220145}
-  back_left_lower_leg_joint: {can_interface: can1, can_id: 8, direction: -1, offset: -0.015113043873225368}
+  back_left_upper_leg_joint: {can_interface: can1, can_id: 7, direction: -1, offset: 0.0}
+  back_left_lower_leg_joint: {can_interface: can1, can_id: 8, direction: -1, offset: 0.0}
   back_right_hip_joint: {can_interface: can1, can_id: 9, direction: 1, offset: 0.0}
-  back_right_upper_leg_joint: {can_interface: can1, can_id: 10, direction: 1, offset: -0.24409356935121779}
-  back_right_lower_leg_joint: {can_interface: can1, can_id: 11, direction: 1, offset: -0.097394110524205546}
+  back_right_upper_leg_joint: {can_interface: can1, can_id: 10, direction: 1, offset: 0.0}
+  back_right_lower_leg_joint: {can_interface: can1, can_id: 11, direction: 1, offset: 0.0}

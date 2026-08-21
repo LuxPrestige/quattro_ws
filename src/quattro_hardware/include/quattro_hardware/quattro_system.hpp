@@ -52,16 +52,17 @@ private:
   bool parse_joints();
   bool validate_interfaces() const;
 
-  // Blocks (with bounded sleeps), re-requesting Get_Encoder_Estimates every
-  // kPollInterval, until every motor has fresh position feedback and a
-  // fresh heartbeat, or `timeout` elapses. Shared by
+  // Blocks (with bounded sleeps), draining the bus every kPollInterval,
+  // until every motor has fresh position feedback and a fresh heartbeat, or
+  // `timeout` elapses. Nothing is requested -- the motors broadcast
+  // Get_Encoder_Estimates on their own (docs/packages/gim6010_driver.md
+  // section 0), so this only has to wait and read. Shared by
   // wait_for_fresh_feedback_and_no_faults() (top of on_activate) and the
   // post-activation refresh (bottom of on_activate) -- the latter exists
   // because sequential per-motor activation of all 12 joints takes well
-  // over feedback_timeout_ms in total and nothing re-polls an
-  // already-activated motor's encoder while later motors are still being
-  // activated, so feedback for the earliest-activated joints would
-  // otherwise already read stale the moment read() resumes.
+  // over feedback_timeout_ms in total, so feedback for the
+  // earliest-activated joints would otherwise already read stale the moment
+  // read() resumes.
   bool wait_for_all_motors_fresh_feedback(std::chrono::milliseconds timeout);
   // Calls wait_for_all_motors_fresh_feedback(startup_timeout_) and then
   // checks Heartbeat.axis_error for a pre-existing fault on every motor
@@ -80,7 +81,6 @@ private:
   double velocity_gain_{0.16};
   double velocity_integrator_gain_{0.32};
   std::chrono::milliseconds feedback_timeout_{150};
-  std::chrono::milliseconds feedback_request_period_{50};
   std::chrono::milliseconds heartbeat_timeout_{400};
   std::chrono::milliseconds startup_timeout_{1000};
   std::chrono::milliseconds motor_activation_interval_{100};
@@ -99,7 +99,6 @@ private:
   // not by itself trigger safe_stop_all().
   std::vector<int> consecutive_write_failures_;
 
-  std::chrono::steady_clock::time_point last_feedback_request_time_{};
   // Updated at the top of write() while active; read() checks this to
   // detect "write() has stopped being called" (see quattro_system.cpp for
   // why command staleness can't be detected by comparing command values).

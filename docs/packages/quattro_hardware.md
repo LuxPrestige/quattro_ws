@@ -141,18 +141,18 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 
 ### `on_activate` — 순차 활성화
 
-1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`로 fresh feedback을, 그리고 `Heartbeat(0x01)`가 도착했는지(`heartbeat_timeout_ms` 이내)를 함께 확인한다. `startup_timeout_ms` 안에 전체 모터가 두 조건을 만족하지 못하면 `CallbackReturn::ERROR`. 이어서 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 heartbeat가 없으면) 활성화를 거부한다.
+1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`가 fresh하게 도착했는지(요청하지 않고 브로드캐스트를 기다린다), 그리고 `Heartbeat(0x01)`가 도착했는지(`heartbeat_timeout_ms` 이내)를 함께 확인한다. `startup_timeout_ms` 안에 전체 모터가 두 조건을 만족하지 못하면 `CallbackReturn::ERROR`. 이어서 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 heartbeat가 없으면) 활성화를 거부한다.
    - **`Get_Error`는 쓰지 않는다** — 실기에서 이 명령이 아예 응답하지 않음을 확인했다(`docs/packages/gim6010_driver.md` 0절). fault 여부는 이미 도착해 있는 `Heartbeat`의 `axis_error` 필드로 판정한다.
 2. `info_.joints` 순서(= calibration.yaml에 나열된 순서)대로 모터를 하나씩 활성화한다:
    - 그 순간 실제로 읽은 위치를 target으로 준비(급격한 이동 방지, 0절 — 인코더 45° 모호성 때문에 임의 위치로 시작하지 않는다).
    - **그 위치로 `Set_Input_Pos`부터 보낸 뒤에** `Set_Axis_State(closed-loop)`를 요청한다(순서 중요 — 아래 설명).
    - `motor_activation_interval_ms` 동안 안정 상태(heartbeat 신선함, `axis_error == 0`)를 확인한 뒤 다음 모터로 진행 — 이 단계도 `Get_Error` 대신 heartbeat를 폴링한다.
 3. 어느 모터든 활성화 실패(feedback/heartbeat 없음, fault)가 나오면, **이미 활성화된 모터를 포함해 전체를 safe stop으로 되돌린다**(부분 활성화 상태로 남기지 않는다).
-4. **2단계가 끝나면 `active_`를 켜기 전에 전체 모터의 encoder feedback을 한 번 더 refresh하고 기다린다**(`wait_for_all_motors_fresh_feedback`, `startup_timeout_ms` 한도).
+4. **2단계가 끝나면 `active_`를 켜기 전에 전체 모터의 encoder feedback을 한 번 더 드레인하고 기다린다**(`wait_for_all_motors_fresh_feedback`, `startup_timeout_ms` 한도).
 
 `startup_timeout_ms`는 1단계(전체 fresh feedback + fault 확인)와 4단계(활성화 후 refresh)만 제한한다 — 12관절 전체를 `motor_activation_interval_ms`(기본 100ms)씩 순차 활성화하는 2단계는 관절 수에 비례해 수 초가 걸릴 수 있고 이를 정상 동작으로 본다(`hardware_spawner`의 `--controller-manager-timeout 30`이 이를 감안한 값이다, `docs/packages/quattro_bringup.md`). `startup_timeout_ms`를 전체 활성화 절차에 적용하면 관절 수가 늘어날 때 항상 실패하므로 그렇게 하지 않는다.
 
-**4단계가 필요한 이유(실기 확인, 2026-08-21)**: 2단계는 이미 활성화된 모터의 encoder estimate를 다시 요청하지 않는다 — `motor_manager_->poll()`은 수신만 드레인할 뿐 새 요청을 보내지 않는다. 12관절을 `motor_activation_interval_ms`(100ms)씩 순차 활성화하면 2단계 전체가 1.2초 이상 걸리는데, `feedback_timeout_ms`(기본 150ms)는 훨씬 짧다. 그 결과 실기 bringup에서 2단계가 끝나자마자 `active_`를 켜면, 먼저 활성화된 관절일수록 `read()`의 stale-feedback 판정에 그 즉시 걸려 활성화 직후 바로 전체 safe stop이 발생했다(관찰: 12관절 중 8개가 "stale feedback"으로 즉시 실패). 4단계에서 모든 관절의 encoder estimate를 다시 요청하고 fresh 응답을 기다린 뒤에야 `active_ = true`로 전환하도록 고쳐서, `read()`가 정상 폴링을 시작하는 시점에는 모든 관절의 feedback이 이미 신선하게 보장된다.
+**4단계가 필요한 이유(실기 확인, 2026-08-21)**: 2단계가 도는 동안에는 아무도 CAN 소켓을 드레인하지 않는다. freshness는 모터가 보낸 시각이 아니라 `dispatch()`가 프레임을 처리한 시각으로 찍히므로, 모터가 아무리 빠르게 브로드캐스트해도 2단계 중에는 어느 관절의 feedback도 갱신되지 않는다. 12관절을 `motor_activation_interval_ms`(100ms)씩 순차 활성화하면 2단계 전체가 1.2초 이상 걸리는데 `feedback_timeout_ms`(기본 150ms)는 훨씬 짧다. 그 결과 실기 bringup에서 2단계가 끝나자마자 `active_`를 켜면, 먼저 활성화된 관절일수록 `read()`의 stale-feedback 판정에 그 즉시 걸려 활성화 직후 바로 전체 safe stop이 발생했다(관찰: 12관절 중 8개가 "stale feedback"으로 즉시 실패). 4단계에서 모든 관절의 feedback을 드레인해 타임스탬프를 다시 찍은 뒤에야 `active_ = true`로 전환하도록 고쳐서, `read()`가 시작되는 시점에는 모든 관절의 feedback이 이미 신선하게 보장된다.
 
 **2단계의 `Set_Input_Pos`/`Set_Axis_State` 순서가 중요한 이유(실기 확인, 2026-08-21)**: `Input_Pos`는 GDS68의 레지스터일 뿐이라, axis state와 무관하게 우리가 쓰기 전까지는 이전 세션에 마지막으로 명령했던 값(현재 위치와 몇 바퀴씩 떨어진 값일 수 있다)을 그대로 들고 있다. 이 절의 이전 버전은 `Set_Axis_State(closed-loop)`를 먼저 보내고 그 다음에 hold 위치를 `Set_Input_Pos`로 보냈는데, 그 사이의 짧은 창 동안 axis가 이미 closed-loop로 그 stale한 값을 향해 실제로 구동을 시작했다 — 실기에서 활성화 직후 관절이 "현재 위치를 hold하려는 순간"인데도 즉시 반대 방향으로 크게(180° 이상) 틀어지는 현상으로 나타났다. `Set_Input_Pos`를 먼저 보내 axis가 아직 idle인 상태에서 목표를 현재 위치로 미리 맞춰두고, 그 다음에 `Set_Axis_State(closed-loop)`를 보내도록 순서를 바꿔 이 창을 없앴다. `calibration_gui`(5절)와 `direct_position_tuning_gui`(5절)의 enable 경로도 같은 순서 문제가 있어 동일하게 고쳤다.
 
@@ -163,7 +163,7 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ### `read()`
 
 1. `MotorManager::poll()`로 두 버스를 non-blocking 드레인한다(추가 스레드 없음 — `docs/packages/gim6010_driver.md` 0/3절).
-2. 각 모터의 최신 feedback(`0x09` 폴링)을 `motor_rev_to_joint_rad`/`motor_rev_s_to_joint_rad_s`로 joint 단위(rad, rad/s)로 변환해 state 버퍼에 쓴다. `feedback_request_period_ms`마다 관절별로 다시 요청하되, 이미 그 시점 기준으로 fresh한 feedback을 가진 모터는 건너뛴다 — 일부 노드가 요청 없이도 자발적으로 `0x09`를 훨씬 빠른 주기로 브로드캐스트하기 때문(`docs/packages/gim6010_driver.md` 0절). 어떤 노드가 그러는지 하드코딩하지 않고 "이미 fresh하면 요청 생략"이라는 일반 규칙만 적용해, 자발적으로 broadcast하는 노드에는 자동으로 중복 요청을 안 보내게 된다.
+2. 각 모터의 최신 feedback(`0x09`)을 `motor_rev_to_joint_rad`/`motor_rev_s_to_joint_rad_s`로 joint 단위(rad, rad/s)로 변환해 state 버퍼에 쓴다. **`read()`는 `0x09`를 요청하지 않는다** — 모터가 자발적으로 브로드캐스트하도록 설정되어 있어(`docs/packages/gim6010_driver.md` 0절) 드레인만 하면 된다. 이전에 있던 `feedback_request_period_ms` 주기 요청과 "이미 fresh하면 생략" 규칙은 함께 제거했고, 파라미터도 없앴다.
 3. `feedback_timeout_ms`/`heartbeat_timeout_ms`를 넘긴 모터가 있으면 stale로 표시하고 안전 정책(4절)을 트리거한다.
 4. 이미 도착해 있는 `Heartbeat`의 `axis_error` 필드가 0이 아니면 fault로 표시하고 안전 정책을 트리거한다 — `Get_Error`는 요청하지 않는다(실기 미응답, `docs/packages/gim6010_driver.md` 0절).
 5. Direct Position은 실측 토크 경로가 없으므로 effort state는 `NaN`을 반환한다 — 임의 값을 대신 채우지 않는다.

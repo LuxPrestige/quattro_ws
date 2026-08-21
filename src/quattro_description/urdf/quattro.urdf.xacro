@@ -564,7 +564,6 @@
         <param name="velocity_gain">${direct_position['velocity_gain']}</param>
         <param name="velocity_integrator_gain">${direct_position['velocity_integrator_gain']}</param>
         <param name="feedback_timeout_ms">150</param>
-        <param name="feedback_request_period_ms">50</param>
         <param name="heartbeat_timeout_ms">400</param>
         <param name="startup_timeout_ms">1000</param>
         <param name="motor_activation_interval_ms">$(arg motor_activation_interval_ms)</param>
