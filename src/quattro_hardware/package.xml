@@ -5,7 +5,7 @@
   <version>0.1.0</version>
   <description>
     ros2_control hardware layer connecting Quattro joints to real
-    GIM6010-8/GDS68 motors via gim6010_driver, plus the joint calibration GUI.
+    GIM6010-8/GDS68 motors via gim6010_driver, plus calibration and tuning GUIs.
   </description>
   <maintainer email="ros@todo.todo">ros</maintainer>
   <license>Apache-2.0</license>

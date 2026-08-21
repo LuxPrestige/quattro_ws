@@ -40,9 +40,17 @@ if(Qt5_FOUND AND yaml-cpp_FOUND)
     Qt5::Widgets
     yaml-cpp::yaml-cpp)
   install(TARGETS calibration_gui DESTINATION lib/${PROJECT_NAME})
+  add_executable(direct_position_tuning_gui src/direct_position_tuning_gui.cpp)
+  target_compile_features(direct_position_tuning_gui PUBLIC cxx_std_17)
+  target_link_libraries(direct_position_tuning_gui
+    quattro_hardware
+    gim6010_driver::gim6010_driver
+    Qt5::Widgets
+    yaml-cpp::yaml-cpp)
+  install(TARGETS direct_position_tuning_gui DESTINATION lib/${PROJECT_NAME})
 else()
   message(WARNING
-    "Qt5 Widgets and/or yaml-cpp not found -- skipping calibration_gui. "
+    "Qt5 Widgets and/or yaml-cpp not found -- skipping hardware GUI tools. "
     "Install qtbase5-dev and libyaml-cpp-dev to build it.")
 endif()
 

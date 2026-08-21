@@ -204,6 +204,21 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 - 저장 대상 `calibration.yaml`의 `can_interface`/`can_id`/`direction`이 기준 매핑(0절)과 다르면 저장을 거부한다.
 - enable 전 fault를 자동으로 지우지 않는다(`quattro_hardware`의 나머지 코드와 동일한 원칙).
 
+### `direct_position_tuning_gui`
+
+단일 모터 Direct Position gain 튜닝 전용 Qt 도구다. 한 번에 선택한 모터 하나만 활성화하며 `controller_manager`나 `calibration_gui`와 동시에 실행하지 않는다.
+
+- `current_limit`, `position_gain`, `velocity_gain`, `velocity_integrator_gain`, 상대 목표각을 텍스트로 직접 입력한다.
+- Apply 시 fresh encoder와 기존 fault를 확인하고 YAML의 offset/direction 변환으로 현재 위치 hold부터 시작한다.
+- 상대 목표각 입력은 1회 ±10°로 제한하고 누적 목표가 URDF 관절 한계를 벗어나면 거부한다.
+- 실측 위치, 목표 위치, 위치 오차, 속도를 20 Hz로 표시한다.
+- `Save Values to YAML`은 `direct_position` 공통값만 원자적으로 저장한다. 모터 flash의 `Save_Configuration`은 호출하지 않는다.
+
+```bash
+ros2 run quattro_hardware direct_position_tuning_gui \
+  --calibration-file /ws/src/quattro_bringup/config/calibration.yaml
+```
+
 ## 6. 단일 모터부터 확대하는 시험 순서
 
 자동 movement 도구를 전제하지 않고, 매 단계 결과를 사람이 확인한다. 12축 시험으로 범위를 넓히기 전에 이 순서를 항상 거친다.
