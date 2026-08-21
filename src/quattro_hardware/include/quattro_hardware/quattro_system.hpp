@@ -52,9 +52,21 @@ private:
   bool parse_joints();
   bool validate_interfaces() const;
 
-  // Blocks (with bounded sleeps) until every motor has answered with fresh
-  // position feedback and no pre-existing fault, or startup_timeout_
-  // elapses. Called once at the top of on_activate.
+  // Blocks (with bounded sleeps), re-requesting Get_Encoder_Estimates every
+  // kPollInterval, until every motor has fresh position feedback and a
+  // fresh heartbeat, or `timeout` elapses. Shared by
+  // wait_for_fresh_feedback_and_no_faults() (top of on_activate) and the
+  // post-activation refresh (bottom of on_activate) -- the latter exists
+  // because sequential per-motor activation of all 12 joints takes well
+  // over feedback_timeout_ms in total and nothing re-polls an
+  // already-activated motor's encoder while later motors are still being
+  // activated, so feedback for the earliest-activated joints would
+  // otherwise already read stale the moment read() resumes.
+  bool wait_for_all_motors_fresh_feedback(std::chrono::milliseconds timeout);
+  // Calls wait_for_all_motors_fresh_feedback(startup_timeout_) and then
+  // checks Heartbeat.axis_error for a pre-existing fault on every motor
+  // (Get_Error does not answer on this firmware -- docs/packages/
+  // gim6010_driver.md section 0). Called once at the top of on_activate.
   bool wait_for_fresh_feedback_and_no_faults();
   // Brings a single motor into closed-loop control, holding at its current
   // measured position. Blocks for up to ~motor_activation_interval_.
@@ -80,6 +92,12 @@ private:
   std::vector<JointContext> joints_;
   std::vector<std::string> buses_;
   std::unique_ptr<gim6010_driver::MotorManager> motor_manager_;
+  // Per-joint count of consecutive write() cycles whose Set_Input_Pos was
+  // rejected (CanSocket::send() is a non-blocking write() -- a full kernel
+  // CAN TX queue makes it fail immediately). Reset to 0 on activation and
+  // on every successful send; see write() for why a single rejection does
+  // not by itself trigger safe_stop_all().
+  std::vector<int> consecutive_write_failures_;
 
   std::chrono::steady_clock::time_point last_feedback_request_time_{};
   // Updated at the top of write() while active; read() checks this to

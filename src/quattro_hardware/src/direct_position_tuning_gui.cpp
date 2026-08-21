@@ -265,20 +265,21 @@ private:
 
   bool read_fresh_position(const Joint & joint, double & joint_rad)
   {
+    // Get_Error (0x03) goes unanswered on this firmware even though
+    // Get_Encoder_Estimates (0x09) and Heartbeat (0x01) both respond
+    // normally (confirmed on the bus with candump/cansend against node 0-2).
+    // Heartbeat already carries axis_error, so use that for the fault check
+    // instead of blocking forever on a response that never arrives.
     manager_->request_encoder_estimate(joint.node_id);
-    manager_->request_get_error(joint.node_id);
     for (int attempt = 0; attempt < 20; ++attempt) {
       QThread::msleep(10);
       manager_->poll();
       const auto * motor = manager_->motor(joint.node_id);
-      if (motor && motor->last_encoder_estimate() && motor->last_error() &&
-        motor->last_heartbeat())
-      {
-        const auto error = *motor->last_error();
-        if (error.active_errors != 0 || error.disarm_reason != 0) {
-          status_->setText(QString("Motor fault: active=0x%1 disarm=0x%2")
-            .arg(error.active_errors, 8, 16, QChar('0'))
-            .arg(error.disarm_reason, 8, 16, QChar('0')));
+      if (motor && motor->last_encoder_estimate() && motor->last_heartbeat()) {
+        const auto heartbeat = *motor->last_heartbeat();
+        if (heartbeat.axis_error != 0) {
+          status_->setText(
+            QString("Motor fault: axis_error=0x%1").arg(heartbeat.axis_error, 8, 16, QChar('0')));
           return false;
         }
         joint_rad = quattro_hardware::motor_rev_to_joint_rad(
@@ -286,7 +287,7 @@ private:
         return true;
       }
     }
-    status_->setText("No fresh encoder/error response; refusing to enable.");
+    status_->setText("No fresh encoder/heartbeat response; refusing to enable.");
     return false;
   }
 
@@ -317,18 +318,40 @@ private:
       static_cast<float>(config_.velocity_integrator_gain)) &&
       manager_->send_set_controller_mode(
       joint.node_id, gim6010_driver::ControlMode::kPositionControl,
-      gim6010_driver::InputMode::kDirect) &&
-      manager_->send_set_axis_state(
-      joint.node_id, gim6010_driver::AxisState::kClosedLoopControl);
+      gim6010_driver::InputMode::kDirect);
     if (!configured) {
-      status_->setText("Failed to configure or enable the selected motor.");
+      status_->setText("Failed to configure the selected motor.");
+      return;
+    }
+
+    // Write the hold-at-current-position target before requesting
+    // closed-loop control, not after: Input_Pos keeps whatever it was last
+    // set to (possibly from a previous session, far away) until we write
+    // it, regardless of axis state. Setting it while still idle means
+    // closed-loop starts from a stationary target instead of chasing a
+    // stale one for the brief window until this command lands (on real
+    // hardware this window was long enough to visibly snap the joint in
+    // the wrong direction, sometimes 180+ degrees, the instant Apply and
+    // Enable was pressed -- same fix as QuattroSystem::activate_joint(),
+    // docs/packages/quattro_hardware.md section 2).
+    gim6010_driver::SetInputPosCommand hold_command;
+    hold_command.position_rev = static_cast<float>(
+      quattro_hardware::joint_rad_to_motor_rev(current_rad, joint.calibration));
+    if (!manager_->send_set_input_pos(joint.node_id, hold_command)) {
+      status_->setText("Failed to send the initial hold position.");
+      return;
+    }
+
+    if (!manager_->send_set_axis_state(
+        joint.node_id, gim6010_driver::AxisState::kClosedLoopControl))
+    {
+      status_->setText("Failed to enable the selected motor.");
       manager_->send_set_axis_state(joint.node_id, gim6010_driver::AxisState::kIdle);
       return;
     }
 
     active_index_ = index;
     target_rad_ = current_rad;
-    send_position(joint, target_rad_);
     send_target_->setEnabled(true);
     joint_box_->setEnabled(false);
     status_->setText("Enabled at the measured position. Enter a relative target and send it.");

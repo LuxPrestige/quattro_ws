@@ -18,6 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     """Build the desktop-only hardware visualization launch description."""
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_rviz = LaunchConfiguration('use_rviz')
+    show_target = LaunchConfiguration('show_target')
     description_share = FindPackageShare('quattro_description')
     xacro_file = PathJoinSubstitution([
         description_share, 'urdf', 'quattro.urdf.xacro'])
@@ -51,6 +52,14 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'use_sim_time', default_value='false',
             description='Use simulation clock.'),
+        DeclareLaunchArgument(
+            'show_target', default_value='true',
+            description=(
+                'Also overlay the commanded trajectory target (orange JointAngle). '
+                'Set to false to show only the actual encoder position (black '
+                'JointStale) -- e.g. while diagnosing unexpected motion, so the '
+                'target overlay does not distract from what the motor is really '
+                'doing.')),
         Node(
             package='quattro_description',
             executable='trajectory_to_joint_state.py',
@@ -58,6 +67,7 @@ def generate_launch_description() -> LaunchDescription:
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
             remappings=[('joint_states', 'target_joint_states')],
+            condition=IfCondition(show_target),
         ),
         Node(
             package='robot_state_publisher',
@@ -85,6 +95,7 @@ def generate_launch_description() -> LaunchDescription:
                 ('joint_states', 'target_joint_states'),
                 ('robot_description', 'joint_angle_robot_description'),
             ],
+            condition=IfCondition(show_target),
         ),
         Node(
             package='tf2_ros',
@@ -109,6 +120,7 @@ def generate_launch_description() -> LaunchDescription:
                 '--child-frame-id', 'joint_angle/base_link',
             ],
             parameters=[{'use_sim_time': use_sim_time}],
+            condition=IfCondition(show_target),
         ),
         Node(
             package='rviz2',

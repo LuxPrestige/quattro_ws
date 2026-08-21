@@ -233,7 +233,9 @@ private:
     disable_all_btn_ = new QPushButton("Disable All Motors", this);
     minus_btn_ = new QPushButton("-1 deg", this);
     plus_btn_ = new QPushButton("+1 deg", this);
+    move_to_saved_zero_btn_ = new QPushButton("Move to Saved Zero", this);
     save_btn_ = new QPushButton("Save Current Position as Zero", this);
+    reload_btn_ = new QPushButton("Reload Calibration from File", this);
     status_label_ = new QLabel(this);
     status_label_->setWordWrap(true);
 
@@ -244,11 +246,16 @@ private:
     connect(disable_all_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_disable_all);
     connect(minus_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_jog_minus);
     connect(plus_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_jog_plus);
+    connect(
+      move_to_saved_zero_btn_, &QPushButton::clicked, this,
+      &CalibrationWindow::on_move_to_saved_zero);
     connect(save_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_save_zero);
+    connect(reload_btn_, &QPushButton::clicked, this, &CalibrationWindow::on_reload_from_file);
 
     auto * layout = new QVBoxLayout(this);
     layout->addWidget(
       new QLabel(QString("Calibration file: %1").arg(QString::fromStdString(calibration_file_))));
+    layout->addWidget(reload_btn_);
     layout->addWidget(joint_selector_);
 
     auto * single_group = new QGroupBox("Single motor", this);
@@ -262,6 +269,8 @@ private:
     all_layout->addWidget(enable_all_btn_);
     all_layout->addWidget(disable_all_btn_);
     layout->addWidget(all_group);
+
+    layout->addWidget(move_to_saved_zero_btn_);
 
     auto * jog_layout = new QHBoxLayout();
     jog_layout->addWidget(minus_btn_);
@@ -338,9 +347,16 @@ private:
     motor_manager_->send_set_controller_mode(
       joint.can_id, gim6010_driver::ControlMode::kPositionControl,
       gim6010_driver::InputMode::kDirect);
+    // Write the hold-at-current-position target before requesting
+    // closed-loop control, not after: Input_Pos keeps whatever it was last
+    // set to (possibly from a previous session, far away) until we write
+    // it, regardless of axis state. Setting it while still idle removes the
+    // window where closed-loop would otherwise chase a stale target the
+    // instant it engages (same fix as QuattroSystem::activate_joint(),
+    // docs/packages/quattro_hardware.md section 2).
+    send_hold_command(index);
     motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kClosedLoopControl);
     enabled_[static_cast<size_t>(index)] = true;
-    send_hold_command(index);
   }
 
   void idle_motor(int index)
@@ -370,12 +386,14 @@ private:
 
   void on_selection_changed(int index)
   {
-    if (mode_ == Mode::kSingle && selected_index_ >= 0 &&
-      selected_index_ != index && enabled_[static_cast<size_t>(selected_index_)])
-    {
-      idle_motor(selected_index_);
-      mode_ = Mode::kNone;
-    }
+    // Switching the dropdown only changes which joint the jog buttons and
+    // Enable/Disable Selected act on -- it does not touch any other
+    // motor's enabled state. Selecting a different joint used to idle
+    // whichever single motor was previously active; that made it
+    // impossible to hold several joints enabled at once while calibrating
+    // them one at a time (e.g. holding one leg fixed as a reference while
+    // adjusting an adjacent joint). Each joint's enabled state is now
+    // independent of selection.
     selected_index_ = index;
     update_status_label();
   }
@@ -389,13 +407,9 @@ private:
       QMessageBox::warning(this, "Calibration", "Disable All Motors first.");
       return;
     }
-    if (mode_ == Mode::kSingle) {
-      for (size_t i = 0; i < joints_.size(); ++i) {
-        if (enabled_[i]) {
-          idle_motor(static_cast<int>(i));
-        }
-      }
-    }
+    // Deliberately does not idle any other already-enabled motor first (see
+    // on_selection_changed()) -- enabling the selected joint only ever adds
+    // to the set of currently-held motors.
     set_motor_closed_loop(selected_index_);
     mode_ = Mode::kSingle;
     update_status_label();
@@ -460,6 +474,24 @@ private:
     update_status_label();
   }
 
+  void on_move_to_saved_zero()
+  {
+    if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
+      QMessageBox::warning(this, "Calibration", "Select and enable a motor first.");
+      return;
+    }
+    const auto & joint = joints_[static_cast<size_t>(selected_index_)];
+    // target_joint_rad_ is always expressed in this session's offset-0
+    // frame (session_calibration()): joint_rad = session_rad - offset, so
+    // session_rad == offset is exactly the point where the real calibrated
+    // joint_rad is 0 -- the saved zero from calibration.yaml (or from the
+    // last Reload Calibration from File). This physically drives the motor
+    // there instead of just holding wherever it already was.
+    target_joint_rad_[static_cast<size_t>(selected_index_)] = joint.offset;
+    send_hold_command(selected_index_);
+    update_status_label();
+  }
+
   void on_save_zero()
   {
     if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
@@ -497,6 +529,55 @@ private:
       .arg(QString::fromStdString(joint.name)).arg(joint.offset, 0, 'f', 6));
   }
 
+  void on_reload_from_file()
+  {
+    CalibrationData reloaded;
+    try {
+      reloaded = load_calibration(calibration_file_);
+    } catch (const std::exception & error) {
+      QMessageBox::critical(
+        this, "Calibration",
+        QString("Failed to reload calibration file: %1").arg(error.what()));
+      return;
+    }
+
+    current_limit_ = reloaded.current_limit;
+    position_gain_ = reloaded.position_gain;
+    velocity_gain_ = reloaded.velocity_gain;
+    velocity_integrator_gain_ = reloaded.velocity_integrator_gain;
+    // load_calibration() always walks kCanonicalJoints in the same fixed
+    // order joints_ was originally built from, so index-for-index
+    // correspondence holds; can_bus/can_id/direction are canonical and
+    // already re-validated by load_calibration(), only offset can have
+    // actually changed on disk.
+    for (size_t i = 0; i < joints_.size() && i < reloaded.joints.size(); ++i) {
+      joints_[i].offset = reloaded.joints[i].offset;
+    }
+
+    // Push the fresh current_limit/gains to every already-enabled motor so
+    // they take effect immediately, without disabling and re-enabling
+    // (which would also reset the hold target). Offsets are not sent
+    // anywhere live -- an enabled motor is always driven relative to
+    // wherever it was when it was enabled (session_calibration() uses
+    // offset 0 for that reason); the reloaded offset only changes what
+    // on_save_zero() computes next and what the status label shows below.
+    for (size_t i = 0; i < joints_.size(); ++i) {
+      if (!enabled_[i]) {
+        continue;
+      }
+      const auto & joint = joints_[i];
+      motor_manager_->send_set_limits(
+        joint.can_id, kCalibrationVelocityLimitRevS, static_cast<float>(current_limit_));
+      motor_manager_->send_set_pos_gain(joint.can_id, static_cast<float>(position_gain_));
+      motor_manager_->send_set_vel_gains(
+        joint.can_id, static_cast<float>(velocity_gain_),
+        static_cast<float>(velocity_integrator_gain_));
+    }
+
+    update_status_label();
+    QMessageBox::information(this, "Calibration", "Reloaded calibration values from file.");
+  }
+
   void on_timer_tick()
   {
     motor_manager_->poll();
@@ -530,7 +611,9 @@ private:
   QPushButton * disable_all_btn_{nullptr};
   QPushButton * minus_btn_{nullptr};
   QPushButton * plus_btn_{nullptr};
+  QPushButton * move_to_saved_zero_btn_{nullptr};
   QPushButton * save_btn_{nullptr};
+  QPushButton * reload_btn_{nullptr};
   QLabel * status_label_{nullptr};
   QTimer * timer_{nullptr};
 };

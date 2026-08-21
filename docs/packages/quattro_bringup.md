@@ -59,6 +59,12 @@ bringup configure는 이 공통 설정을 모터마다 한 번 적용하지만 `
 
 두 launch 모두 시각화 프로세스 자체는 CAN/모터에 접근하지 않고 `robot_state_publisher` + `gait_controller`(선택) + `trajectory_to_joint_state.py`(`quattro_description`) + RViz로 IK/gait 출력이나 실기 상태를 확인한다. `remote_visualization.launch.py`는 `/joint_states`의 실제 엔코더 자세를 검정색 `JointStale`, trajectory 명령 자세를 주황색 `JointAngle` STL 모델로 같은 위치에 겹쳐 표시한다. 각 RViz RobotModel의 `Collision Enabled`를 켜면 해당 자세의 primitive 충돌 범위를 추가로 표시할 수 있다.
 
+`remote_visualization.launch.py`의 `show_target`(기본 `true`)를 `false`로 주면 주황색 목표(`JointAngle`) 오버레이 없이 검정색 실제 인코더 위치(`JointStale`)만 표시한다 — 목표와 겹쳐 보면 헷갈리는, 실제 모터가 예상과 다른 방향/거리로 움직이는지만 순수하게 눈으로 확인하고 싶을 때 쓴다:
+
+```bash
+ros2 launch quattro_bringup remote_visualization.launch.py show_target:=false
+```
+
 ## 실행 후 확인
 
 ```bash
@@ -80,7 +86,7 @@ ip -details -statistics link show can0
 ip -details -statistics link show can1
 ```
 
-단순 stale feedback(일시적 프레임 누락)과 GDS68 자체 fault(`Get_Error` 응답)를 같은 원인으로 단정하지 않는다(`docs/packages/quattro_hardware.md` 4절). 로그와 CAN 상태를 먼저 저장하고, 원인을 확인하기 전에 무조건 error clear를 반복하지 않는다.
+단순 stale feedback(일시적 프레임 누락)과 GDS68 자체 fault(`Heartbeat.axis_error` — `Get_Error`는 실기에서 응답하지 않아 쓰지 않는다, `docs/packages/gim6010_driver.md` 0절)를 같은 원인으로 단정하지 않는다(`docs/packages/quattro_hardware.md` 4절). 로그와 CAN 상태를 먼저 저장하고, 원인을 확인하기 전에 무조건 error clear를 반복하지 않는다.
 
 ## 종료
 

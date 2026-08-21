@@ -17,6 +17,16 @@ namespace
 {
 
 constexpr std::chrono::milliseconds kPollInterval{5};
+// A single rejected Set_Input_Pos is treated as transient CAN TX queue
+// pressure, not a fault -- see write() and docs/packages/quattro_hardware.md
+// section 2 ("write()"). Observed on real hardware: a handful of motors
+// (docs/development_status.md, "encoder estimate 자발적 브로드캐스트") keep
+// broadcasting Get_Encoder_Estimates on their own well beyond what anyone
+// requested, and that extra bus load occasionally fills the kernel's CAN TX
+// queue (default qlen 10) for exactly one write() cycle. A joint with a real
+// problem (disconnected, bus down, ...) fails every cycle and still trips
+// this within kMaxConsecutiveWriteFailures * 10 ms.
+constexpr int kMaxConsecutiveWriteFailures = 3;
 
 bool get_required(
   const std::unordered_map<std::string, std::string> & params, const std::string & key,
@@ -67,6 +77,28 @@ bool parse_ms_param(
   }
   out = std::chrono::milliseconds(static_cast<long>(std::lround(value)));
   return true;
+}
+
+// on_configure sends 3 frames per joint (Set_Limits, Set_Pos_Gain,
+// Set_Vel_Gains) back to back for all 12 joints with no pacing -- observed
+// on real hardware to overrun the kernel's CAN TX queue (default qlen 10)
+// partway through each bus, which makes CanSocket::send() (a non-blocking
+// write()) return false with no fault of the motor's own. This is a
+// one-time startup burst, not the real-time write() hot path, so a bounded
+// retry-with-backoff here is safe and lets the queue drain instead of
+// failing configure outright.
+template <typename SendFn>
+bool send_with_retry(SendFn && send_fn)
+{
+  constexpr int kMaxAttempts = 20;
+  constexpr auto kRetryDelay = std::chrono::milliseconds(2);
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (send_fn()) {
+      return true;
+    }
+    std::this_thread::sleep_for(kRetryDelay);
+  }
+  return false;
 }
 
 }  // namespace
@@ -290,18 +322,24 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
 
   bool ok = true;
   for (const auto & joint : joints_) {
-    if (!motor_manager_->send_set_limits(
-        joint.node_id, static_cast<float>(rotor_velocity_limit_rev_s_),
-        static_cast<float>(current_limit_)))
-    {
+    const bool limits_ok = send_with_retry([&] {
+        return motor_manager_->send_set_limits(
+          joint.node_id, static_cast<float>(rotor_velocity_limit_rev_s_),
+          static_cast<float>(current_limit_));
+      });
+    if (!limits_ok) {
       RCLCPP_ERROR(logger, "Failed to send Set_Limits to joint '%s'", joint.name.c_str());
       ok = false;
     }
     const bool gains_ok =
-      motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_)) &&
-      motor_manager_->send_set_vel_gains(
-      joint.node_id, static_cast<float>(velocity_gain_),
-      static_cast<float>(velocity_integrator_gain_));
+      send_with_retry([&] {
+        return motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_));
+      }) &&
+      send_with_retry([&] {
+        return motor_manager_->send_set_vel_gains(
+          joint.node_id, static_cast<float>(velocity_gain_),
+          static_cast<float>(velocity_integrator_gain_));
+      });
     if (!gains_ok) {
       RCLCPP_ERROR(
         logger, "Failed to apply position/velocity gains to joint '%s'", joint.name.c_str());
@@ -334,10 +372,9 @@ hardware_interface::CallbackReturn QuattroSystem::on_cleanup(const rclcpp_lifecy
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-bool QuattroSystem::wait_for_fresh_feedback_and_no_faults()
+bool QuattroSystem::wait_for_all_motors_fresh_feedback(std::chrono::milliseconds timeout)
 {
-  const auto & logger = get_logger();
-  const auto deadline = std::chrono::steady_clock::now() + startup_timeout_;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
 
   std::set<uint8_t> pending;
   for (const auto & joint : joints_) {
@@ -356,7 +393,9 @@ bool QuattroSystem::wait_for_fresh_feedback_and_no_faults()
     const auto now = std::chrono::steady_clock::now();
     for (auto it = pending.begin(); it != pending.end();) {
       const auto * motor = motor_manager_->motor(*it);
-      if (motor != nullptr && motor->has_fresh_feedback(feedback_timeout_, now)) {
+      if (motor != nullptr && motor->has_fresh_feedback(feedback_timeout_, now) &&
+        motor->has_fresh_heartbeat(heartbeat_timeout_, now))
+      {
         it = pending.erase(it);
       } else {
         ++it;
@@ -364,32 +403,36 @@ bool QuattroSystem::wait_for_fresh_feedback_and_no_faults()
     }
   }
 
-  if (!pending.empty()) {
+  return pending.empty();
+}
+
+bool QuattroSystem::wait_for_fresh_feedback_and_no_faults()
+{
+  const auto & logger = get_logger();
+
+  if (!wait_for_all_motors_fresh_feedback(startup_timeout_)) {
     RCLCPP_ERROR(
-      logger, "%zu motor(s) never answered with fresh feedback within startup_timeout_ms (%ld ms)",
-      pending.size(), startup_timeout_.count());
+      logger, "One or more motors never answered with fresh encoder feedback and heartbeat "
+      "within startup_timeout_ms (%ld ms)", startup_timeout_.count());
     return false;
   }
 
-  // Fresh feedback confirmed for everyone; now request and check for
-  // pre-existing faults before touching axis state on any motor.
-  for (const auto & joint : joints_) {
-    motor_manager_->request_get_error(joint.node_id);
-  }
-  std::this_thread::sleep_for(kPollInterval);
-  motor_manager_->poll();
-
+  // Get_Error (0x03) goes unanswered on this firmware even though
+  // Get_Encoder_Estimates (0x09) and Heartbeat (0x01) both respond normally
+  // (confirmed on the bus with candump/cansend against several nodes) -- a
+  // wait on request_get_error()/last_error() here would never resolve, so
+  // pre-existing faults are read from Heartbeat's axis_error field instead
+  // (docs/packages/quattro_hardware.md section 0).
   bool fault_free = true;
   for (const auto & joint : joints_) {
     const auto * motor = motor_manager_->motor(joint.node_id);
-    const auto error = motor != nullptr ? motor->last_error() : std::nullopt;
-    if (!error || error->active_errors != 0 || error->disarm_reason != 0) {
+    const auto heartbeat = motor != nullptr ? motor->last_heartbeat() : std::nullopt;
+    if (!heartbeat || heartbeat->axis_error != 0) {
       RCLCPP_ERROR(
-        logger, "Joint '%s' (node %u) has a pre-existing fault or did not respond to Get_Error "
-        "(active_errors=0x%08X, disarm_reason=0x%08X) -- refusing to activate. Clear the fault "
-        "explicitly before retrying.",
-        joint.name.c_str(), joint.node_id, error ? error->active_errors : 0U,
-        error ? error->disarm_reason : 0U);
+        logger, "Joint '%s' (node %u) has a pre-existing fault or no heartbeat "
+        "(axis_error=0x%08X) -- refusing to activate. Clear the fault explicitly before "
+        "retrying.",
+        joint.name.c_str(), joint.node_id, heartbeat ? heartbeat->axis_error : 0U);
       fault_free = false;
     }
   }
@@ -415,6 +458,26 @@ bool QuattroSystem::activate_joint(const JointContext & joint)
     RCLCPP_ERROR(logger, "Failed to set controller mode for joint '%s'", joint.name.c_str());
     return false;
   }
+
+  // Send the hold-at-current-position target BEFORE requesting closed-loop
+  // control, not after: Input_Pos is just a register and stays whatever it
+  // was last set to (e.g. from a previous session, possibly many turns
+  // away) until we write it, regardless of axis state. Enabling closed-loop
+  // first left a real window where the axis actively drove toward that
+  // stale setpoint before our correcting Set_Input_Pos arrived -- on real
+  // hardware this showed up as the joint visibly snapping in the wrong
+  // direction (by a large, sometimes 180+ degree margin) the instant
+  // activation reached it, even though the target and the just-measured
+  // current position are mathematically identical. Writing Input_Pos while
+  // still idle means closed-loop starts from a stationary target with no
+  // window to chase a stale one.
+  gim6010_driver::SetInputPosCommand command;
+  command.position_rev = static_cast<float>(joint_rad_to_motor_rev(current_joint_rad, joint.calibration));
+  if (!motor_manager_->send_set_input_pos(joint.node_id, command)) {
+    RCLCPP_ERROR(logger, "Joint '%s' rejected initial hold position", joint.name.c_str());
+    return false;
+  }
+
   if (!motor_manager_->send_set_axis_state(
       joint.node_id, gim6010_driver::AxisState::kClosedLoopControl))
   {
@@ -423,27 +486,27 @@ bool QuattroSystem::activate_joint(const JointContext & joint)
     return false;
   }
 
-  gim6010_driver::SetInputPosCommand command;
-  command.position_rev = static_cast<float>(joint_rad_to_motor_rev(current_joint_rad, joint.calibration));
-  const auto frame = motor_manager_->send_set_input_pos(joint.node_id, command);
-  if (!frame) {
-    RCLCPP_ERROR(logger, "Joint '%s' rejected initial hold position", joint.name.c_str());
-    return false;
-  }
-
   // Stability check: hold for motor_activation_interval_ and confirm no
-  // fault appears before moving on to the next motor.
+  // fault appears before moving on to the next motor. Get_Error never
+  // answers on this firmware (see wait_for_fresh_feedback_and_no_faults()),
+  // so this reads Heartbeat's axis_error instead.
   const auto stable_until = std::chrono::steady_clock::now() + motor_activation_interval_;
   while (std::chrono::steady_clock::now() < stable_until) {
-    motor_manager_->request_get_error(joint.node_id);
     std::this_thread::sleep_for(kPollInterval);
     motor_manager_->poll();
 
-    const auto error = motor->last_error();
-    if (error && (error->active_errors != 0 || error->disarm_reason != 0)) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
       RCLCPP_ERROR(
-        logger, "Joint '%s' faulted during activation stabilization (active_errors=0x%08X, "
-        "disarm_reason=0x%08X)", joint.name.c_str(), error->active_errors, error->disarm_reason);
+        logger, "Joint '%s' heartbeat went stale during activation stabilization",
+        joint.name.c_str());
+      return false;
+    }
+    const auto heartbeat = motor->last_heartbeat();
+    if (heartbeat && heartbeat->axis_error != 0) {
+      RCLCPP_ERROR(
+        logger, "Joint '%s' faulted during activation stabilization (axis_error=0x%08X)",
+        joint.name.c_str(), heartbeat->axis_error);
       return false;
     }
   }
@@ -484,6 +547,25 @@ hardware_interface::CallbackReturn QuattroSystem::on_activate(const rclcpp_lifec
     }
   }
 
+  // Sequentially activating all 12 joints (motor_activation_interval_ms
+  // each) takes well over feedback_timeout_ms in total, and nothing
+  // re-requests an already-activated joint's encoder estimate while later
+  // joints are still being activated -- so by the time this loop finishes,
+  // the earliest-activated joints' feedback is already older than
+  // feedback_timeout_ms (observed on real hardware: read()'s first cycle
+  // after activation immediately flagged most joints "stale feedback" and
+  // safe-stopped everything moments after a successful activation). Refresh
+  // every joint's feedback here, before handing control back to read(), so
+  // the normal read() polling cadence starts from fresh timestamps.
+  if (!wait_for_all_motors_fresh_feedback(startup_timeout_)) {
+    RCLCPP_ERROR(
+      logger, "Feedback went stale for one or more joints immediately after sequential "
+      "activation -- stopping all motors");
+    safe_stop_all();
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  consecutive_write_failures_.assign(joints_.size(), 0);
   active_ = true;
   last_write_time_ = std::chrono::steady_clock::now();
   last_feedback_request_time_ = last_write_time_;
@@ -518,6 +600,20 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
 
   if (now - last_feedback_request_time_ >= feedback_request_period_) {
     for (const auto & joint : joints_) {
+      // A few motors on this firmware broadcast Get_Encoder_Estimates on
+      // their own at a much higher rate than we would ever ask for (RxSdo
+      // does not respond on this firmware, so there is no way to configure
+      // which -- docs/packages/gim6010_driver.md section 0). dispatch()
+      // updates the same "last feedback" timestamp regardless of whether a
+      // reading was requested or arrived unprompted, so if it is already
+      // fresher than what we're about to ask for, requesting again only
+      // adds bus load for nothing. This has no node list to maintain: it
+      // just naturally stops polling whichever motors happen to keep
+      // themselves fresh on their own.
+      const auto * motor = motor_manager_->motor(joint.node_id);
+      if (motor != nullptr && motor->has_fresh_feedback(feedback_request_period_, now)) {
+        continue;
+      }
       motor_manager_->request_encoder_estimate(joint.node_id);
     }
     last_feedback_request_time_ = now;
@@ -555,11 +651,14 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
       RCLCPP_ERROR(get_logger(), "Joint '%s': stale heartbeat", joint.name.c_str());
       faulted = true;
     }
-    if (const auto error = motor->last_error()) {
-      if (error->active_errors != 0 || error->disarm_reason != 0) {
+    // Get_Error never answers on this firmware (see
+    // wait_for_fresh_feedback_and_no_faults()); Heartbeat's axis_error is
+    // the only fault source that actually arrives during read().
+    if (const auto heartbeat = motor->last_heartbeat()) {
+      if (heartbeat->axis_error != 0) {
         RCLCPP_ERROR(
-          get_logger(), "Joint '%s': axis fault (active_errors=0x%08X, disarm_reason=0x%08X)",
-          joint.name.c_str(), error->active_errors, error->disarm_reason);
+          get_logger(), "Joint '%s': axis fault (axis_error=0x%08X)", joint.name.c_str(),
+          heartbeat->axis_error);
         faulted = true;
       }
     }
@@ -597,19 +696,32 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
 
   last_write_time_ = std::chrono::steady_clock::now();
 
-  bool any_rejected = false;
-  for (const auto & joint : joints_) {
+  bool faulted = false;
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    const auto & joint = joints_[i];
     const double joint_rad = get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
     gim6010_driver::SetInputPosCommand command;
     command.position_rev =
       static_cast<float>(joint_rad_to_motor_rev(joint_rad, joint.calibration));
-    if (!motor_manager_->send_set_input_pos(joint.node_id, command)) {
-      RCLCPP_ERROR(get_logger(), "Joint '%s': position command rejected", joint.name.c_str());
-      any_rejected = true;
+    if (motor_manager_->send_set_input_pos(joint.node_id, command)) {
+      consecutive_write_failures_[i] = 0;
+      continue;
+    }
+    const int failures = ++consecutive_write_failures_[i];
+    if (failures >= kMaxConsecutiveWriteFailures) {
+      RCLCPP_ERROR(
+        get_logger(), "Joint '%s': position command rejected %d cycles in a row -- treating as "
+        "a real fault", joint.name.c_str(), failures);
+      faulted = true;
+    } else {
+      RCLCPP_WARN(
+        get_logger(), "Joint '%s': position command rejected (%d/%d consecutive) -- likely "
+        "transient CAN TX queue pressure, not yet a fault", joint.name.c_str(), failures,
+        kMaxConsecutiveWriteFailures);
     }
   }
 
-  if (any_rejected) {
+  if (faulted) {
     safe_stop_all();
     return hardware_interface::return_type::ERROR;
   }

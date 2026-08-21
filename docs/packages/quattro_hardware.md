@@ -137,17 +137,24 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 - `Set_Limits(rotor_velocity_limit_rev_s, current_limit)`를 모든 모터에 전송한다.
 - 이 runtime 설정에는 `Save_Configuration(0x1F)`을 사용하지 않는다. 매 bringup configure에서 RAM 설정을 다시 적용하므로 flash 쓰기를 반복하지 않고 YAML을 단일 기준으로 유지한다.
 - **`Clear_Errors`를 자동으로 호출하지 않는다**(4절) — 기존 fault가 있으면 이후 `on_activate`가 거부해야 한다.
+- **실기 확인: 관절당 3개 프레임(Set_Limits/Set_Pos_Gain/Set_Vel_Gains) × 12관절을 텀 없이 보내면 커널 CAN TX 큐(기본 `qlen 10`)가 각 bus의 5~6번째 관절 즈음에서 넘친다(2026-08-21, 실제 12축 bringup에서 `front_right_upper/lower_leg_joint`, `back_right_upper/lower_leg_joint`에서 재현)**: `CanSocket::send()`는 non-blocking `write()`라 큐가 차면 즉시 실패를 반환하고, `resource_manager`는 이 `configure` 실패를 흡수하지 못해 `ros2_control_node`가 그대로 abort된다. 각 전송을 최대 20회·2ms 간격으로 재시도하도록(`send_with_retry`) 고쳤다 — configure는 1회성 startup 단계라 재시도 지연이 실시간성에 영향을 주지 않는다.
 
 ### `on_activate` — 순차 활성화
 
-1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`로 fresh feedback을 먼저 확인한다. `startup_timeout_ms` 안에 전체 모터가 응답하지 않으면 `CallbackReturn::ERROR`. 이어서 `Get_Error`로 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 응답이 없으면) 활성화를 거부한다.
+1. 전체 모터에 대해 `Get_Encoder_Estimates(0x09)`로 fresh feedback을, 그리고 `Heartbeat(0x01)`가 도착했는지(`heartbeat_timeout_ms` 이내)를 함께 확인한다. `startup_timeout_ms` 안에 전체 모터가 두 조건을 만족하지 못하면 `CallbackReturn::ERROR`. 이어서 기존 fault 여부를 확인하고, 하나라도 fault가 있으면(또는 heartbeat가 없으면) 활성화를 거부한다.
+   - **`Get_Error`는 쓰지 않는다** — 실기에서 이 명령이 아예 응답하지 않음을 확인했다(`docs/packages/gim6010_driver.md` 0절). fault 여부는 이미 도착해 있는 `Heartbeat`의 `axis_error` 필드로 판정한다.
 2. `info_.joints` 순서(= calibration.yaml에 나열된 순서)대로 모터를 하나씩 활성화한다:
    - 그 순간 실제로 읽은 위치를 target으로 준비(급격한 이동 방지, 0절 — 인코더 45° 모호성 때문에 임의 위치로 시작하지 않는다).
-   - `Set_Axis_State(closed-loop)` 후 그 위치로 즉시 hold.
-   - `motor_activation_interval_ms` 동안 안정 상태(fault 없음, feedback 정상)를 확인한 뒤 다음 모터로 진행.
-3. 어느 모터든 활성화 실패(feedback 없음, fault)가 나오면, **이미 활성화된 모터를 포함해 전체를 safe stop으로 되돌린다**(부분 활성화 상태로 남기지 않는다).
+   - **그 위치로 `Set_Input_Pos`부터 보낸 뒤에** `Set_Axis_State(closed-loop)`를 요청한다(순서 중요 — 아래 설명).
+   - `motor_activation_interval_ms` 동안 안정 상태(heartbeat 신선함, `axis_error == 0`)를 확인한 뒤 다음 모터로 진행 — 이 단계도 `Get_Error` 대신 heartbeat를 폴링한다.
+3. 어느 모터든 활성화 실패(feedback/heartbeat 없음, fault)가 나오면, **이미 활성화된 모터를 포함해 전체를 safe stop으로 되돌린다**(부분 활성화 상태로 남기지 않는다).
+4. **2단계가 끝나면 `active_`를 켜기 전에 전체 모터의 encoder feedback을 한 번 더 refresh하고 기다린다**(`wait_for_all_motors_fresh_feedback`, `startup_timeout_ms` 한도).
 
-`startup_timeout_ms`는 1단계(전체 fresh feedback + fault 확인)만 제한한다 — 12관절 전체를 `motor_activation_interval_ms`(기본 100ms)씩 순차 활성화하는 2단계는 관절 수에 비례해 수 초가 걸릴 수 있고 이를 정상 동작으로 본다(`hardware_spawner`의 `--controller-manager-timeout 30`이 이를 감안한 값이다, `docs/packages/quattro_bringup.md`). `startup_timeout_ms`를 전체 활성화 절차에 적용하면 관절 수가 늘어날 때 항상 실패하므로 그렇게 하지 않는다.
+`startup_timeout_ms`는 1단계(전체 fresh feedback + fault 확인)와 4단계(활성화 후 refresh)만 제한한다 — 12관절 전체를 `motor_activation_interval_ms`(기본 100ms)씩 순차 활성화하는 2단계는 관절 수에 비례해 수 초가 걸릴 수 있고 이를 정상 동작으로 본다(`hardware_spawner`의 `--controller-manager-timeout 30`이 이를 감안한 값이다, `docs/packages/quattro_bringup.md`). `startup_timeout_ms`를 전체 활성화 절차에 적용하면 관절 수가 늘어날 때 항상 실패하므로 그렇게 하지 않는다.
+
+**4단계가 필요한 이유(실기 확인, 2026-08-21)**: 2단계는 이미 활성화된 모터의 encoder estimate를 다시 요청하지 않는다 — `motor_manager_->poll()`은 수신만 드레인할 뿐 새 요청을 보내지 않는다. 12관절을 `motor_activation_interval_ms`(100ms)씩 순차 활성화하면 2단계 전체가 1.2초 이상 걸리는데, `feedback_timeout_ms`(기본 150ms)는 훨씬 짧다. 그 결과 실기 bringup에서 2단계가 끝나자마자 `active_`를 켜면, 먼저 활성화된 관절일수록 `read()`의 stale-feedback 판정에 그 즉시 걸려 활성화 직후 바로 전체 safe stop이 발생했다(관찰: 12관절 중 8개가 "stale feedback"으로 즉시 실패). 4단계에서 모든 관절의 encoder estimate를 다시 요청하고 fresh 응답을 기다린 뒤에야 `active_ = true`로 전환하도록 고쳐서, `read()`가 정상 폴링을 시작하는 시점에는 모든 관절의 feedback이 이미 신선하게 보장된다.
+
+**2단계의 `Set_Input_Pos`/`Set_Axis_State` 순서가 중요한 이유(실기 확인, 2026-08-21)**: `Input_Pos`는 GDS68의 레지스터일 뿐이라, axis state와 무관하게 우리가 쓰기 전까지는 이전 세션에 마지막으로 명령했던 값(현재 위치와 몇 바퀴씩 떨어진 값일 수 있다)을 그대로 들고 있다. 이 절의 이전 버전은 `Set_Axis_State(closed-loop)`를 먼저 보내고 그 다음에 hold 위치를 `Set_Input_Pos`로 보냈는데, 그 사이의 짧은 창 동안 axis가 이미 closed-loop로 그 stale한 값을 향해 실제로 구동을 시작했다 — 실기에서 활성화 직후 관절이 "현재 위치를 hold하려는 순간"인데도 즉시 반대 방향으로 크게(180° 이상) 틀어지는 현상으로 나타났다. `Set_Input_Pos`를 먼저 보내 axis가 아직 idle인 상태에서 목표를 현재 위치로 미리 맞춰두고, 그 다음에 `Set_Axis_State(closed-loop)`를 보내도록 순서를 바꿔 이 창을 없앴다. `calibration_gui`(5절)와 `direct_position_tuning_gui`(5절)의 enable 경로도 같은 순서 문제가 있어 동일하게 고쳤다.
 
 ### `on_deactivate`
 
@@ -156,16 +163,19 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 ### `read()`
 
 1. `MotorManager::poll()`로 두 버스를 non-blocking 드레인한다(추가 스레드 없음 — `docs/packages/gim6010_driver.md` 0/3절).
-2. 각 모터의 최신 feedback(`0x09` 폴링)을 `motor_rev_to_joint_rad`/`motor_rev_s_to_joint_rad_s`로 joint 단위(rad, rad/s)로 변환해 state 버퍼에 쓴다.
+2. 각 모터의 최신 feedback(`0x09` 폴링)을 `motor_rev_to_joint_rad`/`motor_rev_s_to_joint_rad_s`로 joint 단위(rad, rad/s)로 변환해 state 버퍼에 쓴다. `feedback_request_period_ms`마다 관절별로 다시 요청하되, 이미 그 시점 기준으로 fresh한 feedback을 가진 모터는 건너뛴다 — 일부 노드가 요청 없이도 자발적으로 `0x09`를 훨씬 빠른 주기로 브로드캐스트하기 때문(`docs/packages/gim6010_driver.md` 0절). 어떤 노드가 그러는지 하드코딩하지 않고 "이미 fresh하면 요청 생략"이라는 일반 규칙만 적용해, 자발적으로 broadcast하는 노드에는 자동으로 중복 요청을 안 보내게 된다.
 3. `feedback_timeout_ms`/`heartbeat_timeout_ms`를 넘긴 모터가 있으면 stale로 표시하고 안전 정책(4절)을 트리거한다.
-4. Direct Position은 실측 토크 경로가 없으므로 effort state는 `NaN`을 반환한다 — 임의 값을 대신 채우지 않는다.
+4. 이미 도착해 있는 `Heartbeat`의 `axis_error` 필드가 0이 아니면 fault로 표시하고 안전 정책을 트리거한다 — `Get_Error`는 요청하지 않는다(실기 미응답, `docs/packages/gim6010_driver.md` 0절).
+5. Direct Position은 실측 토크 경로가 없으므로 effort state는 `NaN`을 반환한다 — 임의 값을 대신 채우지 않는다.
 
 ### `write()`
 
 1. `active_`가 아니면(비활성 상태) 아무 것도 보내지 않고 즉시 반환한다.
 2. `joint_rad_to_motor_rev`로 motor 단위로 변환한 뒤 `gim6010_driver::MotorManager::send_set_input_pos`를 호출한다.
-3. encode가 범위 초과로 실패(`std::nullopt`, `docs/packages/gim6010_driver.md` 2절)를 반환하면 그 관절 명령을 거부하고 전체를 safe stop한다 — clamp해서 대신 보내지 않는다(`AGENTS.md` 9번 원칙).
+3. 전송이 실패하면(encode 범위 초과 `std::nullopt`든, `CanSocket::send()`의 non-blocking `write()` 실패든 — `gim6010_driver.md` 2절) 곧바로 safe stop하지 않는다 — 관절별 연속 실패 횟수(`consecutive_write_failures_`)를 세어 `kMaxConsecutiveWriteFailures`(3회) 미만이면 `RCLCPP_WARN`만 남기고 다음 cycle로 넘어간다. 성공하면 그 관절의 카운터를 0으로 리셋한다. 임계값을 넘긴 관절이 하나라도 있으면(그 관절이 3 cycle, 즉 30ms 연속 실패했다는 뜻) 그때 전체를 safe stop하고 `ERROR`를 반환한다.
 4. 매 호출 시작 시 `last_write_time_`을 현재 시각으로 갱신한다.
+
+**3번이 단순 "실패=즉시 safe stop"이 아닌 이유(실기 확인, 2026-08-21)**: 일부 노드(node 3/5/11, `docs/packages/gim6010_driver.md` 0절)가 요청 없이도 encoder estimate를 100Hz로 계속 브로드캐스트해서 커널 CAN TX 큐(기본 `qlen 10`)를 이따금 채우고, 그 cycle에 우연히 겹친 `Set_Input_Pos` 전송이 실패하는 현상이 실제로 재현됐다(`front_right_lower_leg_joint`에서 관찰: "position command rejected" 로그 직후 전체 12관절이 safe stop됨). 이건 그 관절 자체의 문제가 아니라 버스 혼잡으로 인한 1-cycle짜리 일시적 현상이라, 예전처럼 첫 실패에 바로 전체를 세우면 이런 일시적 혼잡만으로도 정상 동작 중인 로봇이 계속 멈춘다. 반대로 실제 문제(관절 연결 끊김, 해당 bus 자체 다운 등)는 매 cycle 실패하므로 30ms 안에 여전히 잡힌다 — 4절 원칙("일시적 CAN frame 누락과 실제 GDS68 fault를 구분해서 진단한다")을 `write()`에도 동일하게 적용한 것이다.
 
 **command watchdog은 `write()`가 아니라 `read()`에서 판정한다.** 컨트롤러가 매 주기 값을 다시 쓰는지("새 값" 여부)를 비교하는 방식은 채택하지 않았다 — 목표에 도달한 뒤에도 완전히 동일한 값으로 계속 hold command를 쓰는 정상적인 정지 상태를 "명령이 끊겼다"고 오판할 수 있기 때문이다. 대신 `read()`가 `now - last_write_time_ > command_timeout_ms`를 확인한다 — `write()`가 실제로 호출되지 않는 상황(예: `controller_manager` write 루프 자체가 멈춤)만 잡아낸다.
 
@@ -184,7 +194,7 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 | command watchdog(`command_timeout_ms`) | `write()` | 해당 관절 hold 또는 전체 safe stop(정책은 구현 시 확정) |
 | feedback stale(`feedback_timeout_ms`) | `read()` | fault 상태, safe stop |
 | heartbeat stale(`heartbeat_timeout_ms`) | `read()` | fault 상태, safe stop |
-| axis/controller/system fault(`Get_Error`) | `read()` | safe stop, 원인 로그 |
+| axis/controller/system fault(`Heartbeat.axis_error` — `Get_Error`는 실기 미응답이라 쓰지 않음, 0절/`gim6010_driver.md` 0절) | `read()` | safe stop, 원인 로그 |
 | CAN bus error-passive/bus-off | `read()`(`gim6010_driver::CanBusState`) | safe stop, bus 단위로 원인 구분 |
 | encode 범위 초과 명령 | `write()` | 해당 관절만 거부 + fault 보고(clamp 금지) |
 
@@ -203,13 +213,14 @@ double joint_Nm_to_mit_output_Nm(double joint_Nm, const JointCalibration &);
 - 저장 시 화면 target이 아니라 최신 encoder feedback을 다시 읽어 `offset = direction * current_motor_position`을 계산한다.
 - 저장 대상 `calibration.yaml`의 `can_interface`/`can_id`/`direction`이 기준 매핑(0절)과 다르면 저장을 거부한다.
 - enable 전 fault를 자동으로 지우지 않는다(`quattro_hardware`의 나머지 코드와 동일한 원칙).
+- hold 위치를 `Set_Input_Pos`로 먼저 보낸 뒤에 `Set_Axis_State(closed-loop)`를 요청한다 — 순서가 반대면 실기에서 활성화 순간 반대 방향으로 크게 틀어질 수 있다(2절 `on_activate` 설명 참고).
 
 ### `direct_position_tuning_gui`
 
 단일 모터 Direct Position gain 튜닝 전용 Qt 도구다. 한 번에 선택한 모터 하나만 활성화하며 `controller_manager`나 `calibration_gui`와 동시에 실행하지 않는다.
 
 - `current_limit`, `position_gain`, `velocity_gain`, `velocity_integrator_gain`, 상대 목표각을 텍스트로 직접 입력한다.
-- Apply 시 fresh encoder와 기존 fault를 확인하고 YAML의 offset/direction 변환으로 현재 위치 hold부터 시작한다.
+- Apply 시 fresh encoder와 fresh heartbeat를 확인하고(`Get_Error`는 요청하지 않는다 — 실기 미응답, `docs/packages/gim6010_driver.md` 0절), heartbeat의 `axis_error`로 기존 fault를 확인한 뒤 YAML의 offset/direction 변환으로 현재 위치 hold부터 시작한다. hold 위치를 `Set_Input_Pos`로 먼저 보낸 뒤에 `Set_Axis_State(closed-loop)`를 요청한다(순서 이유는 2절 `on_activate` 설명 참고).
 - 상대 목표각 입력은 1회 ±10°로 제한하고 누적 목표가 URDF 관절 한계를 벗어나면 거부한다.
 - 실측 위치, 목표 위치, 위치 오차, 속도를 20 Hz로 표시한다.
 - `Save Values to YAML`은 `direct_position` 공통값만 원자적으로 저장한다. 모터 flash의 `Save_Configuration`은 호출하지 않는다.

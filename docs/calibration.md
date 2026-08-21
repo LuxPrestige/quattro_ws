@@ -85,7 +85,7 @@ ros2 run quattro_hardware calibration_gui \
 5. `Save Current Position as Zero`를 누른다.
 6. 저장 후 선택 모터는 비활성화된다.
 
-다른 관절을 선택하면 기존 단일 활성 모터는 먼저 비활성화된다.
+**다른 관절을 선택해도 기존에 활성화된 모터는 계속 hold를 유지한다** — 드롭다운 선택은 `-1 deg`/`+1 deg`/`Enable`/`Disable Selected Motor`가 어느 관절에 적용될지만 바꾸고, 다른 관절의 활성 상태에는 영향을 주지 않는다. 인접 관절을 기준점으로 고정해두고 다른 관절을 조정하는 등, 여러 관절을 하나씩 켜서 동시에 hold하고 싶을 때 이 방식을 그대로 반복해 쓰면 된다. 전부 끄고 싶으면 `Disable All Motors`를 누른다(어떤 방식으로 켰든 전부 idle로 전환한다).
 
 ### 12개 모터 전체 hold
 
@@ -98,6 +98,26 @@ ros2 run quattro_hardware calibration_gui \
 7. 모든 작업 후 `Disable All Motors`를 누른다.
 
 전체 활성 모드에서는 나머지 11개 모터가 기존 목표 위치를 유지한다.
+
+### `Move to Saved Zero` — 기존 캘리브레이션 검증/미세조정
+
+위 두 방식은 "관절을 손으로 원하는 위치에 놓고 그 자리를 새 zero로 저장"하는, 아직 zero를 모르는 상태에서 처음 잡을 때 쓰는 흐름이다. 이미 `calibration.yaml`에 저장된 zero가 있고, 그 위치가 맞는지 눈으로 확인하거나 살짝만 미세조정하고 싶을 때는 이 버튼을 쓴다.
+
+1. 관절을 선택하고 `Enable Selected Motor`(또는 `Enable All Motors`)로 활성화한다 — 이 시점엔 현재 위치를 그대로 hold한다.
+2. `Move to Saved Zero`를 누른다 — 현재 화면이 들고 있는(파일에서 로드됐거나 `Reload Calibration from File`로 새로고침한) 그 관절의 저장된 offset을 이용해, **모터를 실제로 그 저장된 zero 위치까지 이동시킨다**(제자리 hold가 아니라 실제 이동).
+3. 도착한 위치에서 `-1 deg`, `+1 deg`로 필요한 만큼만 미세조정한다.
+4. 결과가 맞으면 `Save Current Position as Zero`로 새 offset을 저장한다(안 맞으면 그냥 `Disable Selected Motor`로 끄면 파일은 바뀌지 않는다).
+
+내부적으로 offset은 CAN으로 전송되지 않고 GUI가 목표각을 계산할 때만 쓰인다 — `Move to Saved Zero`는 저장된 offset을 이번 활성화 세션의 목표각으로 변환해 `Set_Input_Pos`를 보내는 것뿐이다.
+
+### `Reload Calibration from File`
+
+`calibration.yaml`을 다시 읽어 공통 `current_limit`/`position_gain`/`velocity_gain`/`velocity_integrator_gain`과 12관절의 저장된 offset을 화면(GUI 메모리) 상태에 반영한다.
+
+- 이미 활성화(hold)된 모터가 있으면, 그 모터들에는 새로 읽은 `current_limit`/gain 값을 즉시 다시 전송한다(`Set_Limits`/`Set_Pos_Gain`/`Set_Vel_Gains`) — idle로 껐다가 다시 켤 필요 없이, hold 중인 위치를 그대로 유지한 채로 새 게인이 적용된다.
+- offset은 CAN으로 전송하지 않는다(GUI는 활성화된 모터를 항상 "활성화된 순간" 기준 상대 위치로 제어하므로, session 중에는 offset이 관여하지 않는다) — 화면에 새로 반영된 offset은 이후 `Save Current Position as Zero`를 눌렀을 때의 계산과 상태 라벨 표시에만 쓰인다.
+- 주 용도: `direct_position_tuning_gui`로 게인을 튜닝해 YAML에 저장한 뒤, `calibration_gui`를 재시작하지 않고 이미 켜둔 모터에 새 게인을 바로 적용해 확인할 때. 또는 다른 프로세스/사람이 파일을 수정했을 때 이 GUI가 들고 있는 값을 동기화할 때.
+- 파일 로드가 실패(YAML 형식 오류, 기준 매핑 불일치 등)하면 기존 화면 값은 그대로 유지되고 오류 메시지만 뜬다.
 
 ## GUI 제어 설정
 
