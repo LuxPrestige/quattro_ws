@@ -21,6 +21,12 @@ READY means:
 * ``joint_state_broadcaster`` active and publishing 12 valid joints
 * ``joint_trajectory_controller`` active
 * gait OFF -- the robot holds position and is not walking
+
+The process exits 0 on READY and non-zero on FAULT. That exit code is the
+ordering signal anything downstream of a working robot depends on -- in
+particular gait startup, which must not publish a trajectory before
+``joint_trajectory_controller`` is active, because an inactive JTC drops
+incoming trajectories silently.
 """
 
 from enum import Enum
@@ -327,24 +333,31 @@ class BringupManager(Node):
 
 
 def main(args=None) -> None:
-    """Run the bringup state machine, then idle so the node stays inspectable."""
+    """Run the bringup state machine to completion and exit with its result."""
     rclpy.init(args=args)
     node = BringupManager()
+    exit_code = 0
     try:
-        succeeded = node.run()
-        if not succeeded and node.shutdown_on_fault:
-            # Non-zero exit so the launch file can tear the stack down
-            # instead of leaving a half-started robot running.
-            raise SystemExit(1)
-        # Stay alive after READY: the node's state is worth being able to
-        # inspect, and shutting down here would look like a crash.
-        rclpy.spin(node)
+        if not node.run():
+            exit_code = 1
     except KeyboardInterrupt:
-        pass
+        exit_code = 1
     finally:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+    # This node is a one-shot orchestrator: once READY is reached it has no
+    # ongoing job, no subscribers and no services, so staying alive would
+    # only hide the one thing callers need -- whether bringup succeeded.
+    # Exiting turns that into a process result the launch file can act on:
+    # 0 means every stage passed and the robot is holding position, non-zero
+    # means it did not. This is the signal gait startup is gated on, and it
+    # is meaningful in a way a spawner's exit never was: a spawner exits the
+    # same way whether it succeeded or gave up.
+    if exit_code and not node.shutdown_on_fault:
+        return
+    raise SystemExit(exit_code)
 
 
 if __name__ == '__main__':

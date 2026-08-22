@@ -26,7 +26,7 @@ gait_controller:
     stance_duration: 0.30
     clearance_height: 0.040
     penetration_depth: 0.0
-    max_linear_speed: 0.30
+    max_linear_speed: 1.0
     max_yaw_rate: 1.0
     stop_return_speed: 0.08
     control_frequency: 100.0
