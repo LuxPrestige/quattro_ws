@@ -2,44 +2,89 @@
 
 ## 역할
 
-Quattro의 로봇 모델 패키지(`ament_cmake`). URDF/Xacro, mesh, TF 구조, joint/link/inertial/collision 정의, RViz 설정, 실제/시뮬레이션 `ros2_control` description을 소유한다. 제어 알고리즘과 드라이버 구현은 포함하지 않는다.
+Quattro의 URDF/Xacro, mesh, TF, joint/link, inertial/collision, 실제/시뮬레이션 `ros2_control` description을 소유한다.
 
-```text
-src/quattro_description/
-├── urdf/quattro.urdf.xacro     # 소스 원본 (생성된 URDF를 직접 수정하지 않음)
-├── urdf/quattro.urdf           # 동역학·충돌 모델만 담은 순수 URDF
-├── meshes/stl/                  # 몸체/다리 visual용 STL
-├── rviz/quattro.rviz            # 기본 RViz 설정
-├── rviz/hardware_remote.rviz    # 원격 하드웨어 시각화용 RViz 설정
-├── launch/display.launch.py     # joint_state_publisher_gui 기반 단독 모델 확인
-├── scripts/trajectory_to_joint_state.py  # 시각화 전용 trajectory→joint_states 브리지
-└── config/calibration.yaml      # Xacro 검사용 기본 calibration (머신별 파일과 별개)
-```
-
-`quattro.urdf`는 외부 동역학 도구에서 바로 읽을 수 있도록 링크·조인트·질량·무게중심·관성과
-primitive collision geometry를 담고 `visual`, `ros2_control`, Gazebo 및 하드웨어 설정은 제외한 모델이다. 길이·질량·관성은
-각각 m, kg, kg·m² 단위이며 REP-103 좌표계를 따른다. 동역학 수치나 관절 구조를 변경할
-때는 소스 원본인 `quattro.urdf.xacro`와 이 파일을 함께 갱신한다.
+제어 알고리즘이나 GIM6010 protocol 구현은 포함하지 않는다.
 
 ## `quattro.urdf.xacro`
 
-**Xacro 인자**
+실기 `ros2_control`에서는 `quattro_hardware/QuattroSystem`을 사용한다.
 
-| 인자 | 기본값 | 용도 |
-|---|---|---|
-| `calibration_file` | `../config/calibration.yaml` | 공통 Direct Position limit/gain과 관절별 CAN 매핑·방향·offset YAML |
-| `simulation` | `false` | `true`면 `gz_ros2_control/GazeboSimSystem`, `false`면 `quattro_hardware/QuattroSystem` |
-| `motor_activation_interval_ms` | `100` | 모터 순차 활성화 안정화 간격 |
-| `visual_color_override`, `visual_color` | `false`, `0.1 0.1 0.1 1.0` | 비교 시각화에서 모든 STL의 재질 색상을 단일 RGBA로 덮어쓰기 |
-| `simulation_controllers` | `../../quattro_gazebo/config/gazebo_controllers.yaml` | Gazebo `ros2_control` 플러그인에 전달되는 controller yaml 경로 |
+각 joint는:
 
-**`quattro_hardware_joint` 매크로**: joint당 `position` command interface 하나와 `position`/`velocity`/`effort` state interface 3개를 선언한다. joint당 추가 `<param>`으로 `can_interface`, `can_id`, `direction`, `offset`, `gear_ratio`(`8.0` 고정)를 넘긴다.
+- `position` command interface
+- `position`, `velocity`, `effort` state interface
+- `can_interface`
+- `can_id`
+- `direction`
+- `offset`
+- `gear_ratio`
 
-**`quattro_simulation_joint` 매크로**: Gazebo용 구성. joint당 `position` command interface 하나와 `position`(초기값 지정)/`velocity`/`effort` state interface 3개를 선언한다 — `quattro_hardware_joint`와 동일한 command interface 구성이라 `joint_trajectory_controller/JointTrajectoryController`가 실기·시뮬레이션 양쪽에서 그대로 쓰인다.
+를 `QuattroSystem`에 전달한다.
 
-**geometry 매크로**: `stl_visual`은 기존 STL을 visual에만 사용한다. Collision은 `box_collision`, `cylinder_collision`, `sphere_collision` primitive 매크로로 정의하여 시뮬레이션 접촉 계산을 단순화한다.
+## Position Control 설정
 
-**`<ros2_control name="QuattroSystem" type="system">`**: YAML 기반 공통 Direct Position limit/gain과 timeout, rotor velocity limit, telemetry period를 12관절 매크로 호출과 함께 선언한다. 이 파라미터 이름 자체가 `quattro_hardware::QuattroSystem`이 `on_init`에서 읽어야 할 계약이다.
+기존 `direct_position` YAML 명칭은 실제 제어 방식과 일치하지 않으므로 리팩터링 시 `position_control`로 통일하는 것을 권장한다.
+
+예:
+
+```yaml
+position_control:
+  current_limit: 10.0
+  position_gain: 20.0
+  velocity_gain: 0.11
+  velocity_integrator_gain: 0.32
+```
+
+Xacro도 동일하게:
+
+```text
+calibration['position_control']
+```
+
+을 읽도록 수정한다.
+
+이 값은 `QuattroSystem::on_configure()`에서 다음 startup 설정에 사용된다.
+
+```text
+Set_Limits
+Set_Pos_Gain
+Set_Vel_Gains
+Set_Controller_Mode(Position Control, Pos Filter)
+```
+
+## Hardware parameters
+
+`<ros2_control name="QuattroSystem" type="system">`은 최소 다음 timeout/safety parameter를 전달한다.
+
+권장 항목:
+
+```text
+feedback_timeout_ms
+heartbeat_timeout_ms
+startup_timeout_ms
+closed_loop_timeout_ms
+encoder_sync_timeout_ms
+encoder_sync_frames
+command_timeout_ms
+scheduling_warning_ms
+rotor_velocity_limit_rev_s
+telemetry_period_ms
+```
+
+기존 `motor_activation_interval_ms` 같은 고정 지연보다는 실제 Heartbeat Closed Loop 전환과 post-Closed-Loop encoder 수신을 기준으로 activation 완료를 판단하는 것을 우선한다.
+
+## 실기/시뮬레이션 분기
+
+```text
+simulation:=false
+  -> quattro_hardware/QuattroSystem
+
+simulation:=true
+  -> gz_ros2_control/GazeboSimSystem
+```
+
+실기 Position + PosFilter startup 특성은 simulation controller에 억지로 복제하지 않는다. simulation은 ROS joint position interface 계약만 동일하게 유지한다.
 
 ## 검증
 
@@ -49,16 +94,11 @@ xacro src/quattro_description/urdf/quattro.urdf.xacro > /tmp/quattro.urdf
 check_urdf /tmp/quattro.urdf
 ```
 
-`simulation:=true`/`false` 양쪽 모두 별도로 검사한다.
+`simulation:=true`와 `false` 양쪽을 확인한다.
 
-## `display.launch.py`
+## 관련 문서
 
-`robot_state_publisher` + `joint_state_publisher_gui`(또는 `use_gui:=false`면 `joint_state_publisher`) + RViz만 실행하는 모델 단독 확인용 launch. 실제/시뮬레이션 하드웨어와 무관하게 URDF의 링크/조인트/mesh를 눈으로 검사할 때 사용한다.
-
-## `trajectory_to_joint_state.py`
-
-`<controller>/joint_trajectory`를 구독해 **마지막 포인트의 목표 위치**를 그대로 `sensor_msgs/JointState`로 재발행하는 시각화 전용 노드(`quattro_bringup/gait_visualization.launch.py`, `remote_visualization.launch.py`에서 사용). 실제 하드웨어 feedback이 아니므로 노드 시작 시 경고 로그를 남긴다. 이름/위치 개수 불일치, 비유한(non-finite) 값이 있는 trajectory는 무시한다. 원격 비교 RViz에서는 이 값을 주황색 `JointAngle` STL 모델로 표시한다.
-
-## 좌표계와 이름 규칙
-
-`docs/architecture.md` 6~8절(REP-103, 다리/관절 이름, 12관절 표준 순서)을 그대로 따른다. CAN ID는 ROS joint 이름에 포함하지 않는다.
+- `docs/architecture.md`
+- `docs/packages/quattro_hardware.md`
+- `docs/packages/quattro_bringup.md`
+- `docs/calibration.md`
