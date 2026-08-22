@@ -73,7 +73,7 @@ class GaitController(Node):
         self._stop_ramp_rate = float(self.declare_parameter(
             'stop_ramp_rate', 0.3).value)
         self._initial_pose_duration = float(self.declare_parameter(
-            'initial_pose_duration', 5.0).value)
+            'initial_pose_duration', 1.0).value)
         self._staged_initial_pose = bool(self.declare_parameter(
             'staged_initial_pose', False).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)

@@ -589,7 +589,7 @@
         <param name="encoder_sync_frames">2</param>
         <param name="command_timeout_ms">250</param>
         <param name="scheduling_warning_ms">50</param>
-        <param name="rotor_velocity_limit_rev_s">5.0</param>
+        <param name="rotor_velocity_limit_rev_s">10.0</param>
         <param name="telemetry_period_ms">500</param>
       </hardware>
       <xacro:quattro_hardware_joint name="front_left_hip_joint" lower="-1.04" upper="1.04"/>

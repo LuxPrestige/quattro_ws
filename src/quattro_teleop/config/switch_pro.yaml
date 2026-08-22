@@ -21,7 +21,7 @@ quattro_teleop:
     button_right_bumper: 5
 
     # Standard ROS interface values use SI units.
-    scale_linear_x: 0.30
+    scale_linear_x: 0.50
     scale_linear_y: 0.30
     scale_yaw: 1.0
     scale_height: 0.15
