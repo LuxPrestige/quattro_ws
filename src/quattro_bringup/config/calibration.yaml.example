@@ -1,6 +1,6 @@
 # Copy this file to calibration.yaml before hardware calibration.
 # Offsets are radians. Directions preserve the lgh_ws-old GIM calibration order.
-direct_position:
+position_control:
   current_limit: 5.0
   position_gain: 20.0
   velocity_gain: 0.16

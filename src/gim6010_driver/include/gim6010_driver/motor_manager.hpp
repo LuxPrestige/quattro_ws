@@ -1,6 +1,7 @@
 #ifndef GIM6010_DRIVER__MOTOR_MANAGER_HPP_
 #define GIM6010_DRIVER__MOTOR_MANAGER_HPP_
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -8,6 +9,7 @@
 
 #include "gim6010_driver/can_simple_messages.hpp"
 #include "gim6010_driver/can_socket.hpp"
+#include "gim6010_driver/can_socket_interface.hpp"
 #include "gim6010_driver/gim6010_motor.hpp"
 #include "gim6010_driver/mit_protocol.hpp"
 #include "gim6010_driver/types.hpp"
@@ -15,8 +17,8 @@
 namespace gim6010_driver
 {
 
-// Owns one CanSocket per configured bus and one Gim6010Motor per configured
-// node ID, and is the only class in this driver that touches multiple
+// Owns one CanSocketInterface per configured bus and one Gim6010Motor per
+// configured node ID, and is the only class in this driver that touches multiple
 // motors or buses at once. Not specific to any particular joint layout or
 // bus count -- pass whatever set of interface names and node-ID routes the
 // calling project actually has.
@@ -28,11 +30,23 @@ namespace gim6010_driver
 class MotorManager
 {
 public:
+  // Builds one transport per configured bus. The default builds a real
+  // CanSocket; a test passes its own so the whole stack above this line
+  // (routing, dispatch, and any lifecycle logic built on it) runs
+  // unmodified against an in-memory bus.
+  using SocketFactory =
+    std::function<std::unique_ptr<CanSocketInterface>(const std::string & interface_name)>;
+
   // Throws std::invalid_argument for malformed static configuration
   // (duplicate node_id, node_id > kMaxNodeId, a route referencing a bus not
   // present in `bus_interfaces`, or an empty bus/interface name) -- these
   // are programming/config errors, not runtime I/O conditions.
   MotorManager(std::vector<std::string> bus_interfaces, std::vector<MotorRoute> routes);
+  // Same contract, plus: throws std::invalid_argument if `socket_factory`
+  // is empty or returns null for any configured bus.
+  MotorManager(
+    std::vector<std::string> bus_interfaces, std::vector<MotorRoute> routes,
+    SocketFactory socket_factory);
 
   // Opens every configured bus. Returns false if any bus fails to open;
   // already-opened buses from this call are closed again before returning
@@ -79,6 +93,10 @@ public:
   bool send_sdo_write(uint8_t node_id, uint16_t endpoint_id, SdoValue value);
 
   bool request_get_error(uint8_t node_id);
+  // Kept as a general driver/diagnostic capability. Motors wired into
+  // Quattro are configured to broadcast Get_Encoder_Estimates on their own
+  // (~10 ms), so nothing on the normal control path requests one -- see
+  // docs/packages/gim6010_driver.md section 3.
   bool request_encoder_estimate(uint8_t node_id);
   bool request_encoder_count(uint8_t node_id);
   bool request_bus_voltage_current(uint8_t node_id);
@@ -96,7 +114,7 @@ public:
   void dispatch(const CanFrame & frame);
 
 private:
-  std::unordered_map<std::string, std::unique_ptr<CanSocket>> sockets_;
+  std::unordered_map<std::string, std::unique_ptr<CanSocketInterface>> sockets_;
   std::unordered_map<uint8_t, std::string> node_to_bus_;
   std::unordered_map<uint8_t, Gim6010Motor> motors_;
 };

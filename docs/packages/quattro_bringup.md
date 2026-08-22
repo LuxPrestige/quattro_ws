@@ -11,9 +11,9 @@
 - hardware bringup 완료 직후 gait를 자동 시작하지 않는다.
 - 정상 종료 시 안전하게 hardware lifecycle을 종료한다.
 
-## 목표 패키지 구조
+## 패키지 구조
 
-이번 리팩터링에서는 `quattro_bringup`을 `ament_python` 패키지로 전환하는 것을 권장한다.
+`quattro_bringup`은 `ament_python` 패키지다.
 
 ```text
 src/quattro_bringup/
@@ -28,10 +28,20 @@ src/quattro_bringup/
 │   ├── hardware.launch.py
 │   ├── gait_visualization.launch.py
 │   └── remote_visualization.launch.py
-└── config/
-    ├── calibration.yaml
-    ├── calibration.yaml.example
-    └── hardware_controllers.yaml
+├── config/
+│   ├── calibration.yaml
+│   ├── calibration.yaml.example
+│   └── hardware_controllers.yaml
+└── test/
+    ├── test_copyright.py
+    ├── test_flake8.py
+    └── test_pep257.py
+```
+
+실행 파일:
+
+```bash
+ros2 run quattro_bringup bringup_manager
 ```
 
 ## 실행 전 조건
@@ -91,22 +101,42 @@ Closed Loop 이전 encoder 위치를 사용하거나 startup `Set_Input_Pos(curr
 
 ## `hardware.launch.py`
 
-launch 파일은 최대한 단순하게 유지한다.
+launch 파일은 프로세스 실행만 담당한다.
 
-권장 역할:
+역할:
 
 - launch argument 선언
 - Xacro로 `robot_description` 생성
 - `robot_state_publisher` 시작
 - `controller_manager` 시작
 - `bringup_manager` 시작
-- 필요 시 IMU/teleop 시작
+- 조건부로 IMU/teleop/gait 시작
 
-복잡한 `OnProcessExit -> OnProcessExit` chain으로 startup 상태 머신을 구현하지 않는다.
+startup 순서는 `bringup_manager`가 소유한다. `OnProcessExit` chain으로 startup 상태 머신을 구현하지 않는다. spawner 프로세스의 종료는 "성공해서 끝났다"와 "포기해서 끝났다"를 구분하지 못하고, 그 사이에 검증 단계를 넣을 자리도 없기 때문이다.
+
+남아 있는 `OnProcessExit`은 두 개뿐이며 둘 다 순서 제어가 아니라 teardown용이다.
+
+- `controller_manager` 종료 → 전체 shutdown
+- `bringup_manager` 종료 → 전체 shutdown (FAULT 시 non-zero exit)
+
+### launch argument
+
+| argument | 기본값 | 의미 |
+|---|---|---|
+| `calibration_file` | `config/calibration.yaml` | 기체별 calibration YAML |
+| `controller_file` | `config/hardware_controllers.yaml` | controller 설정 |
+| `use_gait` | `false` | gait controller 프로세스 시작 여부 |
+| `start_gait_enabled` | `false` | gait 시작 시 즉시 initial pose 명령 (`use_gait:=true` 필요) |
+| `staged_initial_pose` | `true` | initial pose를 다리 단위로 순차 이동 |
+| `initial_pose_duration` | `5.0` | initial pose 궤적 시간(초) |
+| `use_imu` | `true` | BNO085 노드 시작 |
+| `use_teleop` | `true` | joystick/teleop 시작 |
+
+hardware bringup에는 gait가 필요 없으므로 `use_gait`의 기본값은 `false`다.
 
 ## `bringup_manager.py`
 
-목표 상태:
+상태:
 
 ```text
 WAIT_CONTROLLER_MANAGER
@@ -120,7 +150,32 @@ READY
 FAULT
 ```
 
-`QuattroSystem` activation 성공은 12축 모두가 Closed Loop에 들어가고, Closed Loop 이후 encoder sync가 끝났음을 의미해야 한다.
+각 단계는 `controller_manager` 서비스만 사용한다.
+
+| 상태 | 사용 서비스/토픽 |
+|---|---|
+| `WAIT_CONTROLLER_MANAGER` | 사용할 서비스 전부의 존재 확인 |
+| `CONFIGURE_HARDWARE` | `set_hardware_component_state` → inactive |
+| `ACTIVATE_HARDWARE` | `set_hardware_component_state` → active |
+| `VERIFY_HARDWARE` | `list_hardware_components` |
+| `START_JSB` / `START_JTC` | `load_controller`, `configure_controller`, `switch_controller`(STRICT), `list_controllers` |
+| `VERIFY_JOINT_STATES` | `/joint_states` 구독 |
+
+`ACTIVATE_HARDWARE` 성공은 12축 모두가 Closed Loop에 들어가고 Closed Loop 이후 encoder sync가 끝났음을 의미한다. 그 판정 자체는 `QuattroSystem::on_activate()`가 하고, bringup manager는 결과만 받는다.
+
+`VERIFY_JOINT_STATES`는 12개 position이 모두 유한한 `/joint_states` 메시지를 기다린다. `QuattroSystem::read()`는 encoder 값이 없는 축을 NaN으로 보고하므로, 메시지 길이만으로는 모든 축이 실제로 보고 중인지 알 수 없다.
+
+### parameter
+
+| parameter | 기본값 | 의미 |
+|---|---|---|
+| `controller_manager` | `/controller_manager` | 서비스 namespace |
+| `service_timeout` | `30.0` | 서비스 대기/응답 한도(초) |
+| `joint_state_timeout` | `10.0` | 유효 `/joint_states` 대기 한도(초) |
+| `expected_joints` | `12` | 필요한 joint 수 |
+| `shutdown_on_fault` | `true` | FAULT 시 non-zero exit |
+
+FAULT에서 bringup manager는 모터에 명령을 보내지 않는다. 하드웨어 fault는 이미 `QuattroSystem` 내부에서 전 축 Idle로 처리되며, controller 기동 실패 같은 bringup 측 실패를 두 번째 주체가 같은 bus에 axis-state 명령을 보내 "수습"하게 두지 않는다.
 
 ## READY 상태
 
@@ -151,9 +206,7 @@ READY는 걷는 상태가 아니다.
 
 ## Position Control 설정 파일
 
-기존 `direct_position` 명칭은 실제 mode와 맞지 않으므로 리팩터링 시 `position_control`로 통일하는 것을 권장한다.
-
-예:
+설정 키는 `position_control`이다.
 
 ```yaml
 position_control:

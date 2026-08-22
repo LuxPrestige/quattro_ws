@@ -40,14 +40,14 @@ if(Qt5_FOUND AND yaml-cpp_FOUND)
     Qt5::Widgets
     yaml-cpp::yaml-cpp)
   install(TARGETS calibration_gui DESTINATION lib/${PROJECT_NAME})
-  add_executable(direct_position_tuning_gui src/direct_position_tuning_gui.cpp)
-  target_compile_features(direct_position_tuning_gui PUBLIC cxx_std_17)
-  target_link_libraries(direct_position_tuning_gui
+  add_executable(position_control_tuning_gui src/position_control_tuning_gui.cpp)
+  target_compile_features(position_control_tuning_gui PUBLIC cxx_std_17)
+  target_link_libraries(position_control_tuning_gui
     quattro_hardware
     gim6010_driver::gim6010_driver
     Qt5::Widgets
     yaml-cpp::yaml-cpp)
-  install(TARGETS direct_position_tuning_gui DESTINATION lib/${PROJECT_NAME})
+  install(TARGETS position_control_tuning_gui DESTINATION lib/${PROJECT_NAME})
 else()
   message(WARNING
     "Qt5 Widgets and/or yaml-cpp not found -- skipping hardware GUI tools. "
@@ -76,6 +76,15 @@ if(BUILD_TESTING)
   ament_add_gtest(test_pluginlib_export test/test_pluginlib_export.cpp)
   target_link_libraries(test_pluginlib_export quattro_hardware)
   ament_target_dependencies(test_pluginlib_export pluginlib hardware_interface)
+
+  # Startup-sequence tests. They drive the real QuattroSystem against an
+  # in-memory CAN bus (test/fake_can_network.hpp), so no hardware, no
+  # SocketCAN interface and no controller_manager are needed.
+  ament_add_gtest(test_quattro_system_startup test/test_quattro_system_startup.cpp)
+  target_include_directories(test_quattro_system_startup PRIVATE test)
+  target_link_libraries(test_quattro_system_startup
+    quattro_hardware gim6010_driver::gim6010_driver)
+  ament_target_dependencies(test_quattro_system_startup hardware_interface rclcpp)
 endif()
 
 ament_export_include_directories(include)

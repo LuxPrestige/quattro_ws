@@ -45,7 +45,7 @@ ControlMode::kPositionControl
 InputMode::kPosFilter
 ```
 
-`kDirect`는 Quattro 실기 startup/runtime의 기본 input mode가 아니다.
+`InputMode::kDirect`는 enum에는 남아 있지만 Quattro의 startup/runtime/GUI 어디에서도 사용하지 않는다.
 
 ## 3. EncoderEstimate 운용 계약
 
@@ -63,15 +63,15 @@ Quattro에 연결된 모터는 `Get_Encoder_Estimates(0x009)`를 약 10 ms 주�
 
 따라서 이 드라이버는 최신 encoder를 캐시하더라도 **그 값의 사용 가능 여부를 결정하지 않는다.** Closed Loop 전/후의 의미 판단은 `quattro_hardware` 같은 상위 lifecycle 계층의 책임이다.
 
-상위 계층이 새 frame 여부를 확실하게 판정할 수 있도록 `Gim6010Motor`에 encoder sequence/generation counter를 제공하는 것을 권장한다.
-
-예:
+상위 계층이 새 frame 여부를 확실하게 판정할 수 있도록 `Gim6010Motor`가 encoder sequence counter를 제공한다.
 
 ```cpp
 std::uint64_t encoder_sequence() const noexcept;
 ```
 
-`on_encoder_estimate()`가 호출될 때마다 증가한다.
+`on_encoder_estimate()`가 호출될 때마다 1 증가한다. Heartbeat와 MIT feedback은 이 값을 증가시키지 않는다. "새 0x009이 도착했는가"는 timestamp만으로는 답할 수 없기 때문이다.
+
+기존 `has_fresh_feedback()` / `has_fresh_heartbeat()` timestamp 기반 freshness API는 그대로 유지된다.
 
 ## 5. Heartbeat
 
@@ -92,7 +92,7 @@ Quattro 실기에서는 `Get_Error(0x03)` 요청에 응답이 없는 현상이 �
 
 `MotorManager`는:
 
-- bus별 `CanSocket` 소유
+- bus별 transport(`CanSocketInterface`) 소유
 - `{node_id, bus}` route 관리
 - `poll()`을 통해 non-blocking receive drain
 - 수신 frame을 각 `Gim6010Motor`로 dispatch
@@ -101,6 +101,20 @@ Quattro 실기에서는 `Get_Error(0x03)` 요청에 응답이 없는 현상이 �
 을 담당한다.
 
 background thread를 만들지 않고 `quattro_hardware::read()` 또는 GUI timer가 `poll()`을 호출한다.
+
+### transport 주입
+
+`CanSocket`은 `CanSocketInterface`를 구현하며, `MotorManager`는 socket factory를 받는 생성자를 추가로 제공한다.
+
+```cpp
+using SocketFactory =
+  std::function<std::unique_ptr<CanSocketInterface>(const std::string & interface_name)>;
+
+MotorManager(std::vector<std::string> buses, std::vector<MotorRoute> routes,
+             SocketFactory socket_factory);
+```
+
+기본 생성자는 실제 `CanSocket`을 만든다. factory 생성자는 테스트가 in-memory transport를 주입해 encode/decode, routing, dispatch, encoder sequence를 실제 코드 그대로 검증하기 위한 것이다. 실기 동작 경로는 달라지지 않는다.
 
 ## 7. GIM6010 startup에서 필요한 send API
 
@@ -142,7 +156,8 @@ BUS-OFF
 - Position/PosFilter enum 값
 - MotorManager routing
 - encoder frame dispatch
-- encoder sequence 증가
+- encoder sequence 증가 (encoder frame만 증가, motor별 독립)
+- socket factory 유효성 검사
 - Heartbeat decode
 - CAN error state
 

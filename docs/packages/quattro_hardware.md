@@ -70,16 +70,15 @@ motor_rev = direction * (joint_rad + offset) * gear_ratio / 2π
 
 ROS 경계는 rad/rad/s/N·m를 사용한다.
 
-## 4. `on_configure()` 목표 동작
+## 4. `on_configure()` 동작
 
 `on_configure()`에서는 CAN 연결과 모터 설정을 완료하지만 Closed Loop 전 encoder 위치는 초기 state로 사용하지 않는다.
-
-권장 순서:
 
 ```text
 MotorManager 생성
 → can0/can1 open
-→ heartbeat 기반 모터 존재/axis_error 확인
+→ wait_for_all_heartbeats()
+→ check_pre_activation_faults()
 → 각 모터 Set_Limits
 → 각 모터 Set_Pos_Gain
 → 각 모터 Set_Vel_Gains
@@ -87,56 +86,88 @@ MotorManager 생성
 → CONFIGURED
 ```
 
-설정 burst가 SocketCAN TX queue를 넘지 않도록 startup 전송에는 bounded retry/pacing을 유지한다.
+존재 확인에 Heartbeat만 사용하고 encoder는 보지 않는다. Closed Loop 이전 EncoderEstimate는 도착 자체가 liveness를 뜻하더라도 위치값이 무효이므로, 사용 가능한 값처럼 보이는 경로를 아예 만들지 않는다.
 
-## 5. `on_activate()` 목표 동작
+설정 burst가 SocketCAN TX queue를 넘지 않도록 startup 전송에는 bounded retry/pacing(`send_with_retry()`)을 유지한다.
 
-모터별 activation은 다음 순서를 따른다.
+`Clear_Errors`는 자동으로 보내지 않는다. 기존 fault는 운영자가 판단할 때까지 보이는 상태로 남는다.
+
+## 5. `on_activate()` 동작
+
+모터별 activation(`activate_joint()`)은 다음 순서를 따른다.
 
 ```text
-activation 기준 encoder generation/timestamp 저장
-→ Set_Axis_State(Closed Loop Control)
-→ Heartbeat.axis_state == Closed Loop 확인
-→ Heartbeat.axis_error == 0 확인
-→ Closed Loop 확인 이후 도착한 새 EncoderEstimate 대기
-→ motor_rev -> joint_rad 변환
+Set_Axis_State(Closed Loop Control)
+→ wait_for_closed_loop()
+     Heartbeat.axis_state == Closed Loop 확인
+     Heartbeat.axis_error == 0 확인
+→ 이 시점의 encoder_sequence()를 baseline으로 저장
+→ wait_for_post_closed_loop_encoder()
+     baseline 이후 encoder_sync_frames개 EncoderEstimate 대기
+→ 마지막 frame의 motor_rev -> joint_rad 변환
 → ROS state.position 동기화
-→ 첫 command 기준도 같은 joint_rad로 동기화
+→ position command interface도 같은 joint_rad로 동기화
 → 다음 모터
 ```
+
+baseline을 `Set_Axis_State` 전이 아니라 **Closed Loop Heartbeat 확인 후**에 잡는다. Heartbeat 자체가 최대 한 주기만큼 늦게 도착할 수 있으므로, 그 이전 frame은 Closed Loop 이후에 sampling되었다고 보장할 수 없다.
 
 핵심 규칙:
 
 - Closed Loop 전에 캐시된 encoder는 초기 위치로 사용하지 않는다.
-- startup에서 `Set_Input_Pos(current)`를 보내지 않는다.
-- 첫 유효 encoder는 Closed Loop 이후 수신된 프레임이어야 한다.
-- 필요하면 연속 2~3개 encoder frame을 확인하는 안전 마진을 둘 수 있다.
-- 한 모터라도 timeout/fault가 발생하면 전체 모터를 Idle로 전환하고 activation을 실패시킨다.
+- startup에서 `Set_Input_Pos`를 전혀 보내지 않는다.
+- 첫 유효 encoder는 Closed Loop 확인 이후 수신된 프레임이어야 한다.
+- 한 모터라도 timeout/fault가 발생하면 `safe_stop_all()`로 전체 모터를 Idle로 전환하고 activation을 실패시킨다.
 
 12축 모두 동기화된 뒤에만 `on_activate()`가 SUCCESS를 반환한다.
 
-## 6. Encoder freshness 구현 권장안
+12축 순차 activation은 `feedback_timeout_ms`보다 오래 걸리지만, 각 대기 루프의 `poll()`이 모든 bus를 drain하므로 다른 모터의 freshness도 함께 갱신된다. 그래도 `read()`에 제어를 넘기기 전에 `wait_for_all_fresh_feedback()`으로 전체 freshness를 한 번 더 확인한다.
 
-현재 `Gim6010Motor`는 최신 encoder와 timestamp를 캐시한다. Closed Loop 전/후 프레임을 명확히 구분하기 위해 encoder generation counter를 추가하는 것을 권장한다.
+### lifecycle helper
 
-예:
+| 함수 | 책임 |
+|---|---|
+| `wait_for_all_heartbeats()` | 전 모터 Heartbeat 존재/freshness |
+| `wait_for_all_fresh_feedback()` | Heartbeat + encoder freshness (Closed Loop 이후에만 유효) |
+| `check_pre_activation_faults()` | 전 모터 `Heartbeat.axis_error == 0` |
+| `wait_for_closed_loop()` | 단일 모터 Closed Loop 전환 확인 |
+| `wait_for_post_closed_loop_encoder()` | baseline 이후 encoder frame 대기 |
+| `activate_joint()` | 위 단계 + state/command 동기화 |
+| `safe_stop_all()` | 전 모터 Idle |
 
-```cpp
-std::uint64_t encoder_sequence_{0};
-```
+### activation timeout parameter
 
-새 0x009 수신 시 증가시키고 activation에서:
+고정 지연(`motor_activation_interval_ms`)은 제거되었고 상태 기반 timeout으로 대체되었다.
+
+| parameter | 기본값 | 의미 |
+|---|---:|---|
+| `closed_loop_timeout_ms` | 500 | Closed Loop Heartbeat 대기 한도 |
+| `encoder_sync_timeout_ms` | 200 | post-Closed-Loop encoder 대기 한도 |
+| `encoder_sync_frames` | 2 | 초기 위치 확정에 필요한 post-Closed-Loop frame 수 |
+
+`encoder_sync_frames`는 1 이상이어야 하며 `on_init()`에서 검증한다.
+
+## 6. Encoder sequence와 `encoder_sync_frames`
+
+`Gim6010Motor::encoder_sequence()`는 0x009 수신마다 1씩 증가하는 counter다. activation은 이것으로 Closed Loop 전/후 프레임을 구분한다.
 
 ```text
-sequence_before = encoder_sequence
 Set_Axis_State(ClosedLoop)
 wait heartbeat closed-loop
-wait encoder_sequence > sequence_before
+baseline = encoder_sequence()
+wait encoder_sequence() >= baseline + encoder_sync_frames
 ```
 
-로 판단한다.
+### `encoder_sync_frames`를 2로 두는 이유
 
-더 엄격하게 하려면 Closed Loop heartbeat를 확인한 시점의 sequence를 다시 기준으로 잡고 그 이후 프레임만 사용한다.
+Heartbeat(약 100 ms)와 EncoderEstimate(약 10 ms)는 서로 독립적인 broadcast 스트림이다. Closed Loop Heartbeat를 수신한 시점에서:
+
+- 그 Heartbeat는 최대 한 주기만큼 과거의 상태일 수 있다.
+- 같은 poll 배치에 함께 들어온 0x009은 전환 전에 sampling되었을 가능성이 있다.
+
+`encoder_sync_frames = 1`이면 이 경계선상의 frame을 초기 위치로 쓸 위험이 남는다. 2로 두면 Closed Loop가 이미 보고된 뒤에 sampling된 frame이 최소 한 개는 포함되는 것이 보장된다. 비용은 축당 약 10 ms다.
+
+3 이상은 두 스트림의 skew가 한 frame 주기를 넘는 하드웨어에 대한 추가 마진이며, 현재 실기에서는 관측되지 않았다.
 
 ## 7. `read()`
 
@@ -147,6 +178,8 @@ wait encoder_sequence > sequence_before
 - EncoderEstimate → position/velocity state
 - Heartbeat → axis state/fault 판단
 - CAN bus state → ERROR-ACTIVE 여부 판단
+
+`effort` state는 NaN이다. Position Control + Pos Filter는 측정 토크를 보고하지 않으며 별도 토크 feedback 경로를 연결하지 않았다.
 
 runtime 중 stale encoder, stale heartbeat, non-zero `axis_error`, CAN passive/bus-off 등은 안전 fault로 처리한다.
 
@@ -188,7 +221,7 @@ startup / Closed Loop 진입
 
 ## 10. Calibration / tuning GUI
 
-`calibration_gui`와 position control tuning GUI도 runtime과 동일한 activation 원칙을 따라야 한다.
+`calibration_gui`와 `position_control_tuning_gui`도 runtime과 동일한 activation 원칙을 따른다.
 
 Enable 동작:
 
@@ -198,26 +231,38 @@ Set_Limits
 → Set_Vel_Gains
 → Position + Pos Filter
 → Closed Loop
-→ Closed Loop 이후 encoder 수신
+→ Heartbeat Closed Loop 확인
+→ 그 이후 도착한 encoder 수신
 → session current position 설정
 ```
 
-Enable 순간에는 `Set_Input_Pos`를 보내지 않는다. 첫 position command는 `+/- jog`, `Move to Saved Zero`, relative target 등 사용자가 실제 이동을 요청했을 때 전송한다.
+Enable 순간에는 `Set_Input_Pos`를 보내지 않는다. 첫 position command는 `+/- jog`, `Move to Saved Zero`(calibration GUI), `Send Relative Target`(tuning GUI) 등 사용자가 실제 이동을 요청했을 때 전송한다.
 
-## 11. 테스트 요구사항
+두 GUI 모두 "사용자가 target을 요청했는가"를 별도로 기록하고, 주기 timer는 그 플래그가 설정된 축에만 명령을 반복 전송한다. Enable만 된 축은 모터 자체 Hold 상태로 둔다.
 
-기존 좌표 변환/pluginlib 테스트에 startup sequence 테스트를 추가한다.
+`Save Current Position as Zero`는 화면에 남은 값이나 Closed Loop 이전 cache가 아니라, 해당 축의 Closed Loop 동기화 시점 이후에 도착한 encoder frame을 다시 읽어 사용한다.
 
-최소 검증 항목:
+## 11. 테스트
+
+`test/test_quattro_system_startup.cpp`가 실제 `QuattroSystem`을 in-memory CAN bus(`test/fake_can_network.hpp`) 위에서 구동한다. transport만 교체하므로 `gim6010_driver`의 encode/decode, routing, dispatch, encoder sequence는 실제 코드 그대로 동작하며, "startup에서 `Set_Input_Pos` frame이 0개"와 같은 주장이 mock 호출 횟수가 아니라 실제 wire traffic으로 검증된다.
+
+seam은 `QuattroSystem::create_motor_manager()` 하나뿐이다. 테스트 subclass가 이것만 override한다.
+
+검증 항목:
 
 1. Closed Loop 이전 encoder는 startup 위치로 사용되지 않는다.
-2. controller mode가 Position + PosFilter로 설정된다.
-3. startup에서 `Set_Input_Pos(current)`가 전송되지 않는다.
-4. Closed Loop 이후 새 encoder만 state 초기화에 사용된다.
-5. encoder timeout 시 activation 실패 및 all-idle.
-6. non-zero axis_error 시 activation 실패.
+2. controller mode가 Position Control + Pos Filter로 설정되고, 순서가 limits → gains → mode이며 configure 단계에서는 `Set_Axis_State`를 보내지 않는다.
+3. configure + activate 전체에서 `Set_Input_Pos` 전송 횟수가 0이다.
+4. Closed Loop 확인 이후의 frame만 state 초기화에 사용된다(`encoder_sync_frames` 동작 포함).
+5. post-Closed-Loop encoder timeout 시 activation 실패 및 all-idle.
+6. enable 시 axis_error 발생 시 activation 실패 및 all-idle. 기존 axis_error는 configure 자체를 거부한다.
 7. N번째 모터 activation 실패 시 앞서 활성화된 모터도 모두 Idle.
-8. 첫 정상 command가 encoder 동기화 위치에서 연속적으로 시작한다.
+8. Heartbeat 미수신 시 configure 실패.
+9. activation 직후 command interface == state, 첫 `write()`가 그 위치를 그대로 전송한다.
+10. `read()`가 encoder request를 보내지 않는다.
+11. `direction`/`offset`이 동기화 위치에 반영된다.
+
+encoder sequence counter 자체의 동작은 `gim6010_driver`의 `test_motor_manager.cpp`에서 검증한다.
 
 ## 12. 관련 문서
 

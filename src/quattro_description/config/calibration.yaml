@@ -1,5 +1,5 @@
 # Installed zero-offset fallback used for visualization and URDF validation.
-direct_position:
+position_control:
   current_limit: 5.0
   position_gain: 20.0
   velocity_gain: 0.16

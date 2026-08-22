@@ -81,6 +81,8 @@ ros2 run quattro_hardware calibration_gui \
 
 `-1 deg`, `+1 deg` 등 실제 이동 버튼을 눌렀을 때만 목표 위치를 계산해 `Set_Input_Pos`를 보낸다.
 
+GUI는 축별로 "사용자가 target을 요청했는가"를 기록하고, 주기 timer는 그 축에만 명령을 반복 전송한다. Enable만 된 축은 모터 자체 Hold 상태로 두고 아무것도 보내지 않는다. 축을 Disable하면 이 기록도 초기화되므로, 다시 Enable한 축은 이전 target을 이어서 명령하지 않고 새로 동기화한다.
+
 ```text
 current synchronized position
 → requested relative joint target
@@ -98,9 +100,9 @@ current synchronized position
 
 ## Save Current Position as Zero
 
-저장 버튼을 누를 때는 최신 **Closed Loop 이후 유효 EncoderEstimate**를 다시 사용한다.
+저장 버튼을 누를 때는 최신 **Closed Loop 이후 유효 EncoderEstimate**를 다시 읽어 사용한다.
 
-화면에 남아 있는 stale 값이나 Closed Loop 이전 cache를 저장하지 않는다.
+구현상 축별로 Closed Loop 동기화 시점의 `encoder_sequence()`를 기록해 두고, 저장 시 그보다 나중에 도착한 frame만 받아들인다. 화면에 남아 있는 stale 값이나 Closed Loop 이전 cache는 저장되지 않는다.
 
 ## Live feedback
 
@@ -118,7 +120,7 @@ current synchronized position
 
 ## 설정 파일 명칭
 
-이번 position-control 리팩터링에서는 기존 `direct_position` 키를 `position_control`로 변경하는 것을 권장한다.
+제어 설정 키는 `position_control`이다.
 
 ```yaml
 position_control:
@@ -135,7 +137,7 @@ joints:
     offset: 0.0
 ```
 
-runtime, calibration GUI, tuning GUI, Xacro가 같은 키를 사용해야 한다.
+runtime, calibration GUI, tuning GUI, Xacro가 모두 이 키를 사용한다.
 
 ## 완료 후 검증
 

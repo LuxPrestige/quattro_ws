@@ -28,7 +28,7 @@ URDF/Xacro, mesh, TF, joint/link, inertial/collision, 실제/시뮬레이션 `ro
 
 ### `quattro_bringup`
 
-실제 시스템의 프로세스 실행과 startup orchestration을 담당한다. 모터 프로토콜이나 실시간 `read()`/`write()`는 구현하지 않는다.
+실제 시스템의 프로세스 실행과 startup orchestration을 담당하는 `ament_python` 패키지다. launch 파일은 프로세스 실행만 하고, startup 순서는 `bringup_manager` 노드가 명시적 상태 머신으로 소유한다. 모터 프로토콜이나 실시간 `read()`/`write()`는 구현하지 않는다.
 
 ### `quattro_hardware`
 
@@ -102,8 +102,6 @@ ROS joint state/command 기준 동기화
 
 ### `QuattroSystem::on_configure()`
 
-목표 역할:
-
 ```text
 CAN open
 → static mapping 확인
@@ -114,22 +112,20 @@ CAN open
 → Position Control + Pos Filter 설정
 ```
 
-Closed Loop 전 encoder 위치를 초기 위치로 사용하지 않는다.
+Closed Loop 전 encoder 위치를 초기 위치로 사용하지 않는다. 존재 확인도 Heartbeat만으로 한다.
 
 ### `QuattroSystem::on_activate()`
-
-목표 역할:
 
 ```text
 모터별 Closed Loop 요청
 → Heartbeat로 Closed Loop 확인
-→ 그 이후 도착한 새 EncoderEstimate 대기
+→ 그 시점의 encoder sequence를 기준으로 새 EncoderEstimate 대기
 → motor coordinate -> ROS joint coordinate 변환
-→ state.position 및 command 기준 동기화
+→ state.position 및 command interface 기준 동기화
 → 12축 성공 후 ACTIVE
 ```
 
-한 축이라도 실패하면 partial activation을 유지하지 않고 전체를 안전 상태로 전환한다.
+한 축이라도 실패하면 partial activation을 유지하지 않고 전체를 Idle로 전환한다.
 
 ### `read()` / `write()`
 
@@ -141,7 +137,7 @@ Closed Loop 전 encoder 위치를 초기 위치로 사용하지 않는다.
 
 `quattro_bringup`은 프로세스/컨트롤러 순서를 관리하고, 실제 GIM6010 lifecycle은 `QuattroSystem`이 책임진다.
 
-목표 startup:
+startup:
 
 ```text
 robot_state_publisher + controller_manager
@@ -152,12 +148,14 @@ post-Closed-Loop encoder sync 완료
   ↓
 joint_state_broadcaster
   ↓
+/joint_states 유효성 확인
+  ↓
 joint_trajectory_controller
   ↓
 READY / HOLD
 ```
 
-Gait는 기본 OFF이며 hardware bringup과 분리한다.
+Gait는 기본 OFF이며 hardware bringup과 분리한다. `hardware.launch.py`는 `use_gait:=true`일 때만 gait controller 프로세스를 띄운다.
 
 ## 7. ROS 2 인터페이스
 
@@ -203,7 +201,19 @@ ROS 경계는 SI 단위를 사용하며 REP-103을 따른다.
 
 CAN mapping, calibration, controller joint list에서 이 순서를 유지한다.
 
-## 10. URDF/Xacro 검증
+## 10. 테스트 seam
+
+실기 startup 로직은 하드웨어 없이 검증한다.
+
+```text
+gim6010_driver::CanSocketInterface   transport 추상화
+MotorManager(buses, routes, factory) transport 주입 생성자
+QuattroSystem::create_motor_manager() 하드웨어 계층의 유일한 seam
+```
+
+테스트는 in-memory transport를 주입해 실제 `QuattroSystem` + 실제 `MotorManager`를 구동한다. encode/decode와 routing이 실제 코드이므로 startup CAN traffic 자체를 검증할 수 있다.
+
+## 11. URDF/Xacro 검증
 
 ```bash
 cd /ws

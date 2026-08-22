@@ -10,7 +10,7 @@
 | [`development_status.md`](development_status.md) | 실기에서 확인된 GIM6010 특성과 리팩터링 상태 |
 | [`packages/gim6010_driver.md`](packages/gim6010_driver.md) | CAN Simple / SocketCAN 저수준 계약 |
 | [`packages/quattro_hardware.md`](packages/quattro_hardware.md) | `QuattroSystem` lifecycle, Position + PosFilter startup |
-| [`packages/quattro_bringup.md`](packages/quattro_bringup.md) | 실제 robot bringup 순서 |
+| [`packages/quattro_bringup.md`](packages/quattro_bringup.md) | 실제 robot bringup 순서, `bringup_manager` 상태 머신 |
 | [`calibration.md`](calibration.md) | 관절 영점 캘리브레이션 |
 
 ## 현재 실기 제어 원칙
@@ -54,9 +54,7 @@ Set_Limits
 - Gazebo: [`gazebo.md`](gazebo.md)
 - 제조사 매뉴얼: `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf`
 
-## 실기 bringup 목표
-
-리팩터링 완료 후:
+## 실기 bringup
 
 ```bash
 ros2 launch quattro_bringup hardware.launch.py
@@ -74,7 +72,9 @@ Gait                    OFF
 Robot                   READY / HOLD
 ```
 
-Gait와 초기 자세 이동은 hardware bringup과 분리해 명시적으로 활성화한다.
+Gait와 초기 자세 이동은 hardware bringup과 분리되어 있다. gait controller 프로세스는 `use_gait:=true`일 때만 시작된다.
+
+`READY` 판정은 `bringup_manager`가 로그로 명시한다. launch 파일이 끝까지 진행되는 것 자체는 READY를 뜻하지 않는다.
 
 ## 기본 검증
 
@@ -85,3 +85,12 @@ ros2 topic hz /joint_states
 ip -details -statistics link show can0
 ip -details -statistics link show can1
 ```
+
+## 하드웨어 도구
+
+```bash
+ros2 run quattro_hardware calibration_gui --calibration-file <path>
+ros2 run quattro_hardware position_control_tuning_gui --calibration-file <path>
+```
+
+두 GUI와 `hardware.launch.py`는 같은 SocketCAN 인터페이스를 소유하므로 동시에 실행하지 않는다.

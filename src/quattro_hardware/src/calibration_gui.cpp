@@ -3,9 +3,11 @@
 // talks to gim6010_driver directly and must not run at the same time as
 // hardware.launch.py (docs/calibration.md safety condition).
 //
-// Uses the same Direct Position path as runtime bringup. The calibration
-// file's common current limit and position/velocity gains are applied before
-// an axis enters closed-loop control.
+// Uses the same Position Control + Pos Filter startup path as runtime
+// bringup: limits and gains are applied, then the controller mode, then
+// closed-loop control -- which by itself holds the axis where it is. No
+// Set_Input_Pos is sent when a motor is enabled; the first one is only sent
+// when the operator asks for actual movement (jog, or Move to Saved Zero).
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -26,6 +28,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -113,9 +116,9 @@ struct CalibrationData
 CalibrationData load_calibration(const std::string & path)
 {
   const YAML::Node root = YAML::LoadFile(path);
-  const YAML::Node direct_position = root["direct_position"];
-  if (!direct_position) {
-    throw std::runtime_error("calibration file has no top-level 'direct_position' key: " + path);
+  const YAML::Node position_control = root["position_control"];
+  if (!position_control) {
+    throw std::runtime_error("calibration file has no top-level 'position_control' key: " + path);
   }
   const YAML::Node joints_node = root["joints"];
   if (!joints_node) {
@@ -123,15 +126,15 @@ CalibrationData load_calibration(const std::string & path)
   }
 
   CalibrationData result;
-  result.current_limit = direct_position["current_limit"].as<double>();
-  result.position_gain = direct_position["position_gain"].as<double>();
-  result.velocity_gain = direct_position["velocity_gain"].as<double>();
-  result.velocity_integrator_gain = direct_position["velocity_integrator_gain"].as<double>();
+  result.current_limit = position_control["current_limit"].as<double>();
+  result.position_gain = position_control["position_gain"].as<double>();
+  result.velocity_gain = position_control["velocity_gain"].as<double>();
+  result.velocity_integrator_gain = position_control["velocity_integrator_gain"].as<double>();
   if (!(result.current_limit > 0.0) || result.position_gain < 0.0 ||
     result.velocity_gain < 0.0 || result.velocity_integrator_gain < 0.0)
   {
     throw std::runtime_error(
-      "Direct Position current_limit must be positive and gains must be non-negative");
+      "position_control current_limit must be positive and gains must be non-negative");
   }
   for (const auto & canonical : kCanonicalJoints) {
     const YAML::Node joint_node = joints_node[canonical.name];
@@ -199,6 +202,8 @@ public:
     joints_(std::move(calibration.joints))
   {
     enabled_.assign(joints_.size(), false);
+    has_target_.assign(joints_.size(), false);
+    sync_sequence_.assign(joints_.size(), 0);
     target_joint_rad_.assign(joints_.size(), 0.0);
 
     std::vector<gim6010_driver::MotorRoute> routes;
@@ -338,27 +343,40 @@ private:
     return quattro_hardware::JointCalibration{joint.direction, 0.0, kFixedGearRatio};
   }
 
-  // Blocks until a reading newer than kFeedbackTimeout has arrived for this
-  // joint, or ~200ms elapses. Nothing is requested: the motors broadcast
-  // 0x09 by themselves, so the only thing worth checking is freshness.
-  // Freshness is what makes this safe to call before enabling -- a stale
-  // cached estimate left over from earlier in the session would otherwise
-  // become the hold target and jerk the joint back to where it used to be.
-  bool read_fresh_motor_rev(int index, double & out_motor_rev)
+  // Blocks until a Get_Encoder_Estimates frame that arrived strictly after
+  // this joint was synchronized to closed-loop control lands, or ~200ms
+  // elapses. Nothing is requested: the motors broadcast 0x09 by themselves.
+  //
+  // The sequence comparison, not just freshness, is what makes the result
+  // usable: on the GIM6010-8 a position sampled before the axis reached
+  // closed-loop control can be garbage, and a recent timestamp says nothing
+  // about which side of that transition the frame came from. Only a joint
+  // that has already been enabled has a meaningful sync_sequence_, so this
+  // is only valid to call on an enabled joint.
+  bool read_post_closed_loop_motor_rev(int index, double & out_motor_rev)
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
+    const std::uint64_t baseline = sync_sequence_[static_cast<size_t>(index)];
     for (int attempt = 0; attempt < 20; ++attempt) {
       motor_manager_->poll();
-      if (const auto reading = fresh_motor_reading(joint)) {
-        out_motor_rev = reading->position_rev;
-        return true;
+      const auto * motor = motor_manager_->motor(joint.can_id);
+      if (motor != nullptr && motor->encoder_sequence() > baseline &&
+        motor->has_fresh_feedback(kFeedbackTimeout, std::chrono::steady_clock::now()))
+      {
+        if (const auto reading = motor->last_encoder_estimate()) {
+          out_motor_rev = reading->position_rev;
+          return true;
+        }
       }
       QThread::msleep(10);
     }
     return false;
   }
 
-  // The non-blocking half of the same idea, used by the live display.
+  // The non-blocking, freshness-only half, used by the live display. The
+  // display is allowed to show a pre-closed-loop reading -- seeing what the
+  // motor reports while idle is useful -- but nothing that is saved or
+  // commanded goes through this path.
   std::optional<gim6010_driver::EncoderEstimate> fresh_motor_reading(
     const CalibratedJoint & joint) const
   {
@@ -371,7 +389,10 @@ private:
     return motor->last_encoder_estimate();
   }
 
-  void send_hold_command(int index)
+  // Sends the joint's current target as a Set_Input_Pos. Only ever reached
+  // once the operator has actually asked this joint to move: enabling a
+  // motor does not call this (see enable_motor()).
+  void send_target_command(int index)
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
     const auto calibration = session_calibration(joint);
@@ -380,12 +401,53 @@ private:
       target_joint_rad_[static_cast<size_t>(index)], calibration));
     if (!motor_manager_->send_set_input_pos(joint.can_id, command)) {
       status_label_->setText(
-        QString("WARNING: %1 Direct Position hold command rejected")
+        QString("WARNING: %1 position command rejected")
         .arg(QString::fromStdString(joint.name)));
     }
   }
 
-  void set_motor_closed_loop(int index)
+  // Marks a joint as having an operator-requested target and sends it. The
+  // first call for a joint is also the first Set_Input_Pos that joint has
+  // seen this session.
+  void request_target(int index, double target_joint_rad)
+  {
+    target_joint_rad_[static_cast<size_t>(index)] = target_joint_rad;
+    has_target_[static_cast<size_t>(index)] = true;
+    send_target_command(index);
+  }
+
+  // Blocks until this motor's Heartbeat reports closed-loop control with no
+  // axis error, or ~500ms elapses. Get_Error (0x03) goes unanswered on this
+  // firmware, so Heartbeat is the only fault source available.
+  bool wait_for_closed_loop(int index)
+  {
+    const auto & joint = joints_[static_cast<size_t>(index)];
+    for (int attempt = 0; attempt < 50; ++attempt) {
+      motor_manager_->poll();
+      const auto * motor = motor_manager_->motor(joint.can_id);
+      if (motor != nullptr &&
+        motor->has_fresh_heartbeat(kHeartbeatTimeout, std::chrono::steady_clock::now()))
+      {
+        const auto heartbeat = *motor->last_heartbeat();
+        if (heartbeat.axis_error != 0) {
+          return false;
+        }
+        if (heartbeat.axis_state == gim6010_driver::AxisState::kClosedLoopControl) {
+          return true;
+        }
+      }
+      QThread::msleep(10);
+    }
+    return false;
+  }
+
+  // Same startup sequence QuattroSystem uses (docs/calibration.md, "실기
+  // activation 원칙"): limits, gains, Position Control + Pos Filter, then
+  // closed loop. Closed-loop entry alone holds the axis where it is, so no
+  // Set_Input_Pos is sent here -- and none can be, correctly, because the
+  // position it would carry is only trustworthy after the transition this
+  // is requesting.
+  bool enable_motor(int index)
   {
     const auto & joint = joints_[static_cast<size_t>(index)];
     motor_manager_->send_set_limits(
@@ -395,32 +457,49 @@ private:
       joint.can_id, static_cast<float>(velocity_gain_),
       static_cast<float>(velocity_integrator_gain_));
 
-    double motor_rev = 0.0;
-    if (!read_fresh_motor_rev(index, motor_rev)) {
-      QMessageBox::warning(
-        this, "Calibration",
-        QString("No encoder feedback from '%1' -- not enabling").arg(QString::fromStdString(joint.name)));
-      return;
-    }
-    target_joint_rad_[static_cast<size_t>(index)] =
-      quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint));
-
     // Deliberately no Clear_Errors here, same as QuattroSystem: a
     // pre-existing fault must stay visible, not get silently wiped by
     // enabling.
     motor_manager_->send_set_controller_mode(
       joint.can_id, gim6010_driver::ControlMode::kPositionControl,
-      gim6010_driver::InputMode::kDirect);
-    // Write the hold-at-current-position target before requesting
-    // closed-loop control, not after: Input_Pos keeps whatever it was last
-    // set to (possibly from a previous session, far away) until we write
-    // it, regardless of axis state. Setting it while still idle removes the
-    // window where closed-loop would otherwise chase a stale target the
-    // instant it engages (same fix as QuattroSystem::activate_joint(),
-    // docs/packages/quattro_hardware.md section 2).
-    send_hold_command(index);
+      gim6010_driver::InputMode::kPosFilter);
     motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kClosedLoopControl);
+
+    if (!wait_for_closed_loop(index)) {
+      motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kIdle);
+      QMessageBox::warning(
+        this, "Calibration",
+        QString("'%1' did not report closed-loop control (or reported a fault) -- left idle")
+        .arg(QString::fromStdString(joint.name)));
+      return false;
+    }
+
+    // Baseline for "post-closed-loop" is taken here, after the Heartbeat
+    // confirmed the transition, so every frame counted from now on was
+    // sampled while the axis was already in closed loop.
+    const auto * motor = motor_manager_->motor(joint.can_id);
+    sync_sequence_[static_cast<size_t>(index)] =
+      motor != nullptr ? motor->encoder_sequence() : 0;
     enabled_[static_cast<size_t>(index)] = true;
+
+    double motor_rev = 0.0;
+    if (!read_post_closed_loop_motor_rev(index, motor_rev)) {
+      enabled_[static_cast<size_t>(index)] = false;
+      motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kIdle);
+      QMessageBox::warning(
+        this, "Calibration",
+        QString("No encoder feedback from '%1' after closed loop -- left idle")
+        .arg(QString::fromStdString(joint.name)));
+      return false;
+    }
+    // Session position only. has_target_ stays false: the motor is holding
+    // itself, and nothing has been commanded to it yet.
+    target_joint_rad_[static_cast<size_t>(index)] =
+      quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint));
+    has_target_[static_cast<size_t>(index)] = false;
+    sync_sequence_[static_cast<size_t>(index)] =
+      motor != nullptr ? motor->encoder_sequence() : 0;
+    return true;
   }
 
   void idle_motor(int index)
@@ -428,6 +507,9 @@ private:
     const auto & joint = joints_[static_cast<size_t>(index)];
     motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kIdle);
     enabled_[static_cast<size_t>(index)] = false;
+    // A re-enabled joint must start from its own fresh post-closed-loop
+    // sync again, not resume commanding the target it had before.
+    has_target_[static_cast<size_t>(index)] = false;
   }
 
   void update_status_label()
@@ -439,11 +521,13 @@ private:
     const auto & joint = joints_[static_cast<size_t>(selected_index_)];
     const double target_deg = target_joint_rad_[static_cast<size_t>(selected_index_)] * 180.0 / kPi;
     const char * mode_text = mode_ == Mode::kSingle ? "single" : (mode_ == Mode::kAll ? "all" : "none");
+    const bool commanded = has_target_[static_cast<size_t>(selected_index_)];
     status_label_->setText(
-      QString("Selected: %1  |  enabled: %2  |  mode: %3  |  target: %4 deg  |  saved offset: %5 rad")
+      QString("Selected: %1  |  enabled: %2  |  mode: %3  |  %4 %5 deg  |  saved offset: %6 rad")
       .arg(QString::fromStdString(joint.name))
       .arg(enabled_[static_cast<size_t>(selected_index_)] ? "yes" : "no")
       .arg(mode_text)
+      .arg(commanded ? "target:" : "holding at:")
       .arg(target_deg, 0, 'f', 3)
       .arg(joint.offset, 0, 'f', 6));
   }
@@ -474,8 +558,9 @@ private:
     // Deliberately does not idle any other already-enabled motor first (see
     // on_selection_changed()) -- enabling the selected joint only ever adds
     // to the set of currently-held motors.
-    set_motor_closed_loop(selected_index_);
-    mode_ = Mode::kSingle;
+    if (enable_motor(selected_index_)) {
+      mode_ = Mode::kSingle;
+    }
     update_status_label();
   }
 
@@ -498,7 +583,7 @@ private:
       return;
     }
     for (size_t i = 0; i < joints_.size(); ++i) {
-      set_motor_closed_loop(static_cast<int>(i));
+      enable_motor(static_cast<int>(i));
     }
     mode_ = Mode::kAll;
     if (selected_index_ < 0 && !joints_.empty()) {
@@ -518,13 +603,17 @@ private:
     update_status_label();
   }
 
+  // The jog buttons are one of the three places a Set_Input_Pos originates
+  // (with Move to Saved Zero). Until one of them is pressed the joint is
+  // held by the motor itself and no position command has been sent.
   void on_jog_minus()
   {
     if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
       return;
     }
-    target_joint_rad_[static_cast<size_t>(selected_index_)] -= kJogStepRad;
-    send_hold_command(selected_index_);
+    request_target(
+      selected_index_,
+      target_joint_rad_[static_cast<size_t>(selected_index_)] - kJogStepRad);
     update_status_label();
   }
 
@@ -533,8 +622,9 @@ private:
     if (selected_index_ < 0 || !enabled_[static_cast<size_t>(selected_index_)]) {
       return;
     }
-    target_joint_rad_[static_cast<size_t>(selected_index_)] += kJogStepRad;
-    send_hold_command(selected_index_);
+    request_target(
+      selected_index_,
+      target_joint_rad_[static_cast<size_t>(selected_index_)] + kJogStepRad);
     update_status_label();
   }
 
@@ -551,8 +641,7 @@ private:
     // joint_rad is 0 -- the saved zero from calibration.yaml (or from the
     // last Reload Calibration from File). This physically drives the motor
     // there instead of just holding wherever it already was.
-    target_joint_rad_[static_cast<size_t>(selected_index_)] = joint.offset;
-    send_hold_command(selected_index_);
+    request_target(selected_index_, joint.offset);
     update_status_label();
   }
 
@@ -564,9 +653,15 @@ private:
     }
     auto & joint = joints_[static_cast<size_t>(selected_index_)];
 
+    // Re-read rather than reusing whatever the live display last showed,
+    // and require a frame newer than this joint's closed-loop
+    // synchronization: a stale cache -- or anything sampled before closed
+    // loop -- must never become a saved zero.
     double motor_rev = 0.0;
-    if (!read_fresh_motor_rev(selected_index_, motor_rev)) {
-      QMessageBox::warning(this, "Calibration", "No fresh encoder feedback -- not saving.");
+    if (!read_post_closed_loop_motor_rev(selected_index_, motor_rev)) {
+      QMessageBox::warning(
+        this, "Calibration",
+        "No valid post-closed-loop encoder feedback -- not saving.");
       return;
     }
     joint.offset = quattro_hardware::motor_rev_to_joint_rad(motor_rev, session_calibration(joint));
@@ -645,9 +740,14 @@ private:
   void on_timer_tick()
   {
     motor_manager_->poll();
+    // Only joints the operator has actually commanded get a repeated
+    // Set_Input_Pos. An enabled-but-uncommanded joint is held by the motor
+    // itself (Position Control + Pos Filter), and sending it a position
+    // here would defeat the whole point of not commanding one at enable
+    // time.
     for (size_t i = 0; i < joints_.size(); ++i) {
-      if (enabled_[i]) {
-        send_hold_command(static_cast<int>(i));
+      if (enabled_[i] && has_target_[i]) {
+        send_target_command(static_cast<int>(i));
       }
     }
     update_state_label();
@@ -765,13 +865,17 @@ private:
       .arg(saved_deg, 9, 'f', 3)
       .arg(session_deg, 9, 'f', 3)
       .arg(target_deg, 9, 'f', 3)
-      // Only meaningful while the motor is actually holding: when it is
-      // idle the target is whatever was last commanded and the joint is
-      // free to sit anywhere, so the difference is not a tracking error.
+      // Only a tracking error once a position has actually been commanded.
+      // While idle the joint is free to sit anywhere, and while enabled but
+      // uncommanded the "target" is just where it was when it synchronized
+      // -- in neither case is the difference something the motor is trying
+      // to close.
       .arg(
-        enabled_[static_cast<size_t>(selected_index_)] ?
+        !enabled_[static_cast<size_t>(selected_index_)] ?
+        QString("idle").rightJustified(13) :
+        (has_target_[static_cast<size_t>(selected_index_)] ?
         QString("%1 deg").arg(session_deg - target_deg, 9, 'f', 3) :
-        QString("idle").rightJustified(13))
+        QString("holding").rightJustified(13)))
       .arg(motor_rev, 10, 'f', 6)
       .arg(session_vel_deg_s, 8, 'f', 2));
   }
@@ -788,6 +892,14 @@ private:
   std::unique_ptr<gim6010_driver::MotorManager> motor_manager_;
 
   std::vector<bool> enabled_;
+  // Whether the operator has requested a target for this joint since it was
+  // enabled. False means "closed loop, holding itself, no Set_Input_Pos
+  // sent yet" -- the state every joint is in immediately after enable.
+  std::vector<bool> has_target_;
+  // Gim6010Motor::encoder_sequence() at the moment this joint finished
+  // synchronizing after closed-loop control was confirmed. Any encoder
+  // frame at or below this is either pre-closed-loop or already consumed.
+  std::vector<std::uint64_t> sync_sequence_;
   std::vector<double> target_joint_rad_;
   Mode mode_{Mode::kNone};
   int selected_index_{-1};

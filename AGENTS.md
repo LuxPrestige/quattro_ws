@@ -40,7 +40,9 @@
 7. Closed Loop 이후 encoder를 ROS joint 좌표로 변환하여 `state.position`과 첫 command 기준을 동기화한 뒤 상위 controller에 제어권을 넘긴다.
 8. `Heartbeat.axis_error`와 `axis_state`를 활성화/런타임 안전 판정에 사용한다. 실기에서 응답하지 않는 `Get_Error(0x03)`에 startup 안전 판정을 의존하지 않는다.
 
-이 계약과 충돌하는 과거의 Direct Position safe-start 구현, Closed Loop 전 encoder 사용, startup `Set_Input_Pos(current)` 로직은 제거 대상이다.
+이 계약과 충돌하던 과거의 Direct Position safe-start 구현, Closed Loop 전 encoder 사용, startup `Set_Input_Pos(current)` 로직은 모두 제거되었다. 다시 도입하지 않는다.
+
+실기 제어 설정 키는 `position_control`이며 `direct_position`은 존재하지 않는다.
 
 ## 패키지 경계
 
@@ -50,7 +52,7 @@
 | `quattro_description` | URDF/Xacro, mesh, TF, `ros2_control` description |
 | `quattro_bringup` | launch, controller 구성, startup orchestration |
 | `quattro_gazebo` | Gazebo simulation |
-| `quattro_hardware` | `QuattroSystem`, joint 변환, GIM6010 lifecycle 및 안전 제어 |
+| `quattro_hardware` | `QuattroSystem`, joint 변환, GIM6010 lifecycle 및 안전 제어, calibration/tuning GUI |
 | `gim6010_driver` | SocketCAN, CAN Simple/MIT encode/decode, 모터 상태 캐시 |
 | `quattro_sensors` | 센서 취득 및 표준 ROS 메시지 발행 |
 | `quattro_teleop` | joystick/keyboard 입력을 상위 명령으로 변환 |

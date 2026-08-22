@@ -1,6 +1,11 @@
-// Standalone single-axis Direct Position tuning tool. It must not run at the
-// same time as controller_manager or calibration_gui because all three own
-// the same SocketCAN interfaces.
+// Standalone single-axis Position Control + Pos Filter tuning tool. It must
+// not run at the same time as controller_manager or calibration_gui because
+// all three own the same SocketCAN interfaces.
+//
+// Apply and Enable follows the same startup sequence as QuattroSystem:
+// limits, gains, Position Control + Pos Filter, closed loop, then a
+// post-closed-loop encoder sync. It sends no Set_Input_Pos -- the first one
+// is sent when Send Relative Target is pressed.
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -22,6 +27,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <memory>
@@ -39,6 +45,8 @@ namespace
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kGearRatio = 8.0;
 constexpr float kTuningVelocityLimitRevS = 5.0F;
+// Heartbeat is broadcast at ~100ms, so this tolerates three misses.
+constexpr std::chrono::milliseconds kHeartbeatTimeout{400};
 
 struct Joint
 {
@@ -86,17 +94,17 @@ constexpr std::array<CanonicalJoint, 12> kCanonicalJoints = {
 TuningConfig load_config(const std::string & path)
 {
   const YAML::Node root = YAML::LoadFile(path);
-  const YAML::Node direct = root["direct_position"];
+  const YAML::Node position_control = root["position_control"];
   const YAML::Node joints = root["joints"];
-  if (!direct || !joints) {
-    throw std::runtime_error("YAML requires top-level direct_position and joints keys");
+  if (!position_control || !joints) {
+    throw std::runtime_error("YAML requires top-level position_control and joints keys");
   }
 
   TuningConfig config;
-  config.current_limit = direct["current_limit"].as<double>();
-  config.position_gain = direct["position_gain"].as<double>();
-  config.velocity_gain = direct["velocity_gain"].as<double>();
-  config.velocity_integrator_gain = direct["velocity_integrator_gain"].as<double>();
+  config.current_limit = position_control["current_limit"].as<double>();
+  config.position_gain = position_control["position_gain"].as<double>();
+  config.velocity_gain = position_control["velocity_gain"].as<double>();
+  config.velocity_integrator_gain = position_control["velocity_integrator_gain"].as<double>();
 
   for (const auto & expected : kCanonicalJoints) {
     const YAML::Node node = joints[expected.name];
@@ -121,14 +129,14 @@ TuningConfig load_config(const std::string & path)
   return config;
 }
 
-void save_direct_position(const std::string & path, const TuningConfig & config)
+void save_position_control(const std::string & path, const TuningConfig & config)
 {
   YAML::Node root = YAML::LoadFile(path);
-  YAML::Node direct = root["direct_position"];
-  direct["current_limit"] = config.current_limit;
-  direct["position_gain"] = config.position_gain;
-  direct["velocity_gain"] = config.velocity_gain;
-  direct["velocity_integrator_gain"] = config.velocity_integrator_gain;
+  YAML::Node position_control = root["position_control"];
+  position_control["current_limit"] = config.current_limit;
+  position_control["position_gain"] = config.position_gain;
+  position_control["velocity_gain"] = config.velocity_gain;
+  position_control["velocity_integrator_gain"] = config.velocity_integrator_gain;
 
   const std::string temporary = path + ".tmp";
   {
@@ -145,10 +153,10 @@ void save_direct_position(const std::string & path, const TuningConfig & config)
 
 }  // namespace
 
-class DirectPositionTuningWindow : public QWidget
+class PositionControlTuningWindow : public QWidget
 {
 public:
-  DirectPositionTuningWindow(std::string path, TuningConfig config)
+  PositionControlTuningWindow(std::string path, TuningConfig config)
   : path_(std::move(path)), config_(std::move(config))
   {
     std::vector<gim6010_driver::MotorRoute> routes;
@@ -161,12 +169,12 @@ public:
       std::vector<std::string>(buses.begin(), buses.end()), routes);
     build_ui();
     if (!manager_->open()) {
-      QMessageBox::critical(this, "Direct Position Tuning", "Failed to open CAN interfaces");
+      QMessageBox::critical(this, "Position Control Tuning", "Failed to open CAN interfaces");
       set_controls_enabled(false);
     }
 
     timer_ = new QTimer(this);
-    connect(timer_, &QTimer::timeout, this, &DirectPositionTuningWindow::update_feedback);
+    connect(timer_, &QTimer::timeout, this, &PositionControlTuningWindow::update_feedback);
     timer_->start(50);
   }
 
@@ -181,7 +189,7 @@ protected:
 private:
   void build_ui()
   {
-    setWindowTitle("Quattro Direct Position Tuning");
+    setWindowTitle("Quattro Position Control Tuning");
     auto * layout = new QVBoxLayout(this);
     auto * form = new QFormLayout();
 
@@ -225,10 +233,10 @@ private:
     layout->addWidget(measurement_);
     layout->addWidget(status_);
 
-    connect(enable_, &QPushButton::clicked, this, &DirectPositionTuningWindow::enable_motor);
-    connect(send_target_, &QPushButton::clicked, this, &DirectPositionTuningWindow::send_target);
-    connect(disable_, &QPushButton::clicked, this, &DirectPositionTuningWindow::idle_active_motor);
-    connect(save_yaml_, &QPushButton::clicked, this, &DirectPositionTuningWindow::save_yaml);
+    connect(enable_, &QPushButton::clicked, this, &PositionControlTuningWindow::enable_motor);
+    connect(send_target_, &QPushButton::clicked, this, &PositionControlTuningWindow::send_target);
+    connect(disable_, &QPushButton::clicked, this, &PositionControlTuningWindow::idle_active_motor);
+    connect(save_yaml_, &QPushButton::clicked, this, &PositionControlTuningWindow::save_yaml);
     send_target_->setEnabled(false);
   }
 
@@ -257,38 +265,65 @@ private:
       !(output.current_limit > 0.0) || output.position_gain < 0.0 ||
       output.velocity_gain < 0.0 || output.velocity_integrator_gain < 0.0)
     {
-      QMessageBox::warning(this, "Direct Position Tuning", "Enter valid finite tuning values.");
+      QMessageBox::warning(this, "Position Control Tuning", "Enter valid finite tuning values.");
       return false;
     }
     return true;
   }
 
-  bool read_fresh_position(const Joint & joint, double & joint_rad)
+  // Blocks until this motor's Heartbeat reports closed-loop control with no
+  // axis error, or ~500ms elapses. Get_Error (0x03) goes unanswered on this
+  // firmware even though Get_Encoder_Estimates (0x09) and Heartbeat (0x01)
+  // both arrive on their own (confirmed on the bus with candump against
+  // node 0-2), so Heartbeat is the only fault source available. Nothing is
+  // requested here -- both messages are broadcast by the motor.
+  bool wait_for_closed_loop(const Joint & joint)
   {
-    // Get_Error (0x03) goes unanswered on this firmware even though
-    // Get_Encoder_Estimates (0x09) and Heartbeat (0x01) both arrive on
-    // their own (confirmed on the bus with candump against node 0-2).
-    // Heartbeat already carries axis_error, so use that for the fault check
-    // instead of blocking forever on a response that never arrives.
-    // Nothing is requested here: 0x09 is broadcast by the motors, so this
-    // only waits for one to land.
+    for (int attempt = 0; attempt < 50; ++attempt) {
+      QThread::msleep(10);
+      manager_->poll();
+      const auto * motor = manager_->motor(joint.node_id);
+      if (motor == nullptr ||
+        !motor->has_fresh_heartbeat(kHeartbeatTimeout, std::chrono::steady_clock::now()))
+      {
+        continue;
+      }
+      const auto heartbeat = *motor->last_heartbeat();
+      if (heartbeat.axis_error != 0) {
+        status_->setText(
+          QString("Motor fault: axis_error=0x%1").arg(heartbeat.axis_error, 8, 16, QChar('0')));
+        return false;
+      }
+      if (heartbeat.axis_state == gim6010_driver::AxisState::kClosedLoopControl) {
+        return true;
+      }
+    }
+    status_->setText("Motor never reported closed-loop control; refusing to enable.");
+    return false;
+  }
+
+  // Waits for a Get_Encoder_Estimates frame that arrived after
+  // `baseline_sequence`, which the caller captures at the instant closed
+  // loop was confirmed. On the GIM6010-8 a position sampled before that
+  // transition can be garbage, so this -- not a plain freshness check -- is
+  // what makes the resulting angle usable as the tuning reference.
+  bool read_post_closed_loop_position(
+    const Joint & joint, std::uint64_t baseline_sequence, double & joint_rad)
+  {
     for (int attempt = 0; attempt < 20; ++attempt) {
       QThread::msleep(10);
       manager_->poll();
       const auto * motor = manager_->motor(joint.node_id);
-      if (motor && motor->last_encoder_estimate() && motor->last_heartbeat()) {
-        const auto heartbeat = *motor->last_heartbeat();
-        if (heartbeat.axis_error != 0) {
-          status_->setText(
-            QString("Motor fault: axis_error=0x%1").arg(heartbeat.axis_error, 8, 16, QChar('0')));
-          return false;
-        }
-        joint_rad = quattro_hardware::motor_rev_to_joint_rad(
-          motor->last_encoder_estimate()->position_rev, joint.calibration);
+      if (motor == nullptr || motor->encoder_sequence() <= baseline_sequence) {
+        continue;
+      }
+      if (const auto estimate = motor->last_encoder_estimate()) {
+        joint_rad =
+          quattro_hardware::motor_rev_to_joint_rad(estimate->position_rev, joint.calibration);
         return true;
       }
     }
-    status_->setText("No fresh encoder/heartbeat response; refusing to enable.");
+    status_->setText("No encoder frame arrived after closed loop; refusing to enable.");
     return false;
   }
 
@@ -305,10 +340,6 @@ private:
       return;
     }
     const auto & joint = config_.joints[static_cast<size_t>(index)];
-    double current_rad = 0.0;
-    if (!read_fresh_position(joint, current_rad)) {
-      return;
-    }
 
     const bool configured =
       manager_->send_set_limits(
@@ -319,30 +350,16 @@ private:
       static_cast<float>(config_.velocity_integrator_gain)) &&
       manager_->send_set_controller_mode(
       joint.node_id, gim6010_driver::ControlMode::kPositionControl,
-      gim6010_driver::InputMode::kDirect);
+      gim6010_driver::InputMode::kPosFilter);
     if (!configured) {
       status_->setText("Failed to configure the selected motor.");
       return;
     }
 
-    // Write the hold-at-current-position target before requesting
-    // closed-loop control, not after: Input_Pos keeps whatever it was last
-    // set to (possibly from a previous session, far away) until we write
-    // it, regardless of axis state. Setting it while still idle means
-    // closed-loop starts from a stationary target instead of chasing a
-    // stale one for the brief window until this command lands (on real
-    // hardware this window was long enough to visibly snap the joint in
-    // the wrong direction, sometimes 180+ degrees, the instant Apply and
-    // Enable was pressed -- same fix as QuattroSystem::activate_joint(),
-    // docs/packages/quattro_hardware.md section 2).
-    gim6010_driver::SetInputPosCommand hold_command;
-    hold_command.position_rev = static_cast<float>(
-      quattro_hardware::joint_rad_to_motor_rev(current_rad, joint.calibration));
-    if (!manager_->send_set_input_pos(joint.node_id, hold_command)) {
-      status_->setText("Failed to send the initial hold position.");
-      return;
-    }
-
+    // No Set_Input_Pos here. Position Control + Pos Filter makes the axis
+    // hold its current position the moment closed loop engages, and the
+    // encoder value a pre-emptive hold command would have carried is not
+    // trustworthy until after that same transition.
     if (!manager_->send_set_axis_state(
         joint.node_id, gim6010_driver::AxisState::kClosedLoopControl))
     {
@@ -351,11 +368,30 @@ private:
       return;
     }
 
+    if (!wait_for_closed_loop(joint)) {
+      manager_->send_set_axis_state(joint.node_id, gim6010_driver::AxisState::kIdle);
+      return;
+    }
+
+    // Baseline captured after closed loop is confirmed, so the frame this
+    // waits for was sampled while the axis was already in closed loop.
+    const auto * motor = manager_->motor(joint.node_id);
+    const std::uint64_t baseline = motor != nullptr ? motor->encoder_sequence() : 0;
+    double current_rad = 0.0;
+    if (!read_post_closed_loop_position(joint, baseline, current_rad)) {
+      manager_->send_set_axis_state(joint.node_id, gim6010_driver::AxisState::kIdle);
+      return;
+    }
+
     active_index_ = index;
     target_rad_ = current_rad;
+    // The motor holds itself until Send Relative Target is pressed; that is
+    // the first Set_Input_Pos of the session.
+    has_target_ = false;
     send_target_->setEnabled(true);
     joint_box_->setEnabled(false);
-    status_->setText("Enabled at the measured position. Enter a relative target and send it.");
+    status_->setText(
+      "Closed loop, holding at the synchronized position. Enter a relative target and send it.");
   }
 
   void send_target()
@@ -366,17 +402,18 @@ private:
     bool valid = false;
     const double degrees = relative_target_deg_->text().toDouble(&valid);
     if (!valid || !std::isfinite(degrees)) {
-      QMessageBox::warning(this, "Direct Position Tuning", "Enter a valid relative target.");
+      QMessageBox::warning(this, "Position Control Tuning", "Enter a valid relative target.");
       return;
     }
     const auto & joint = config_.joints[static_cast<size_t>(active_index_)];
     const double requested = target_rad_ + degrees * kPi / 180.0;
     if (requested < joint.lower_rad || requested > joint.upper_rad) {
       QMessageBox::warning(
-        this, "Direct Position Tuning", "Requested target is outside the URDF joint limit.");
+        this, "Position Control Tuning", "Requested target is outside the URDF joint limit.");
       return;
     }
     target_rad_ = requested;
+    has_target_ = true;
     send_position(joint, target_rad_);
   }
 
@@ -398,6 +435,7 @@ private:
       manager_->send_set_axis_state(joint.node_id, gim6010_driver::AxisState::kIdle);
     }
     active_index_ = -1;
+    has_target_ = false;
     send_target_->setEnabled(false);
     joint_box_->setEnabled(true);
     status_->setText("Motor is Idle.");
@@ -422,24 +460,33 @@ private:
     if (active_index_ >= 0) {
       const auto now = std::chrono::steady_clock::now();
       const auto heartbeat = motor->last_heartbeat();
-      if (!motor->has_fresh_heartbeat(std::chrono::milliseconds(400), now) ||
+      if (!motor->has_fresh_heartbeat(kHeartbeatTimeout, now) ||
         (heartbeat && heartbeat->axis_error != 0))
       {
         idle_active_motor();
         status_->setText("Heartbeat became stale or reported a fault; motor changed to Idle.");
         return;
       }
-      send_position(joint, target_rad_);
+      // Only repeat a target the operator actually asked for. Before the
+      // first Send Relative Target the motor is holding itself and must not
+      // be sent a position.
+      if (has_target_) {
+        send_position(joint, target_rad_);
+      }
     }
     const auto estimate = *motor->last_encoder_estimate();
     const double position = quattro_hardware::motor_rev_to_joint_rad(
       estimate.position_rev, joint.calibration);
     const double velocity = quattro_hardware::motor_rev_s_to_joint_rad_s(
       estimate.velocity_rev_s, joint.calibration);
-    const double error = active_index_ >= 0 ? target_rad_ - position : 0.0;
+    // A tracking error only exists once a target has been commanded;
+    // before that the motor is holding itself wherever it happened to be.
+    const bool commanded = active_index_ >= 0 && has_target_;
+    const double error = commanded ? target_rad_ - position : 0.0;
     measurement_->setText(
-      QString("position=%1 deg | target=%2 deg | error=%3 deg | velocity=%4 deg/s")
+      QString("position=%1 deg | %2=%3 deg | error=%4 deg | velocity=%5 deg/s")
       .arg(position * 180.0 / kPi, 0, 'f', 3)
+      .arg(commanded ? "target" : "holding")
       .arg(active_index_ >= 0 ? target_rad_ * 180.0 / kPi : position * 180.0 / kPi, 0, 'f', 3)
       .arg(error * 180.0 / kPi, 0, 'f', 3)
       .arg(velocity * 180.0 / kPi, 0, 'f', 3));
@@ -452,14 +499,14 @@ private:
       return;
     }
     try {
-      save_direct_position(path_, entered);
+      save_position_control(path_, entered);
       config_.current_limit = entered.current_limit;
       config_.position_gain = entered.position_gain;
       config_.velocity_gain = entered.velocity_gain;
       config_.velocity_integrator_gain = entered.velocity_integrator_gain;
-      QMessageBox::information(this, "Direct Position Tuning", "Saved tuning values to YAML.");
+      QMessageBox::information(this, "Position Control Tuning", "Saved tuning values to YAML.");
     } catch (const std::exception & error) {
-      QMessageBox::critical(this, "Direct Position Tuning", error.what());
+      QMessageBox::critical(this, "Position Control Tuning", error.what());
     }
   }
 
@@ -475,6 +522,9 @@ private:
   std::unique_ptr<gim6010_driver::MotorManager> manager_;
   int active_index_{-1};
   double target_rad_{0.0};
+  // False from Apply and Enable until the first Send Relative Target: the
+  // motor is in closed loop holding itself and has been sent no position.
+  bool has_target_{false};
 
   QComboBox * joint_box_{nullptr};
   QLineEdit * current_limit_{nullptr};
@@ -501,16 +551,16 @@ int main(int argc, char ** argv)
     }
   }
   if (path.empty()) {
-    std::fprintf(stderr, "Usage: direct_position_tuning_gui --calibration-file <path>\n");
+    std::fprintf(stderr, "Usage: position_control_tuning_gui --calibration-file <path>\n");
     return 1;
   }
 
   try {
-    DirectPositionTuningWindow window(path, load_config(path));
+    PositionControlTuningWindow window(path, load_config(path));
     window.show();
     return application.exec();
   } catch (const std::exception & error) {
-    QMessageBox::critical(nullptr, "Direct Position Tuning", error.what());
+    QMessageBox::critical(nullptr, "Position Control Tuning", error.what());
     return 1;
   }
 }

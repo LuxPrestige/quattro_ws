@@ -13,6 +13,7 @@ void Gim6010Motor::on_encoder_estimate(
   const EncoderEstimate & message, std::chrono::steady_clock::time_point now)
 {
   encoder_estimate_ = message;
+  ++encoder_sequence_;
   feedback_time_ = now;
 }
 

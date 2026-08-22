@@ -24,9 +24,7 @@ Quattro의 URDF/Xacro, mesh, TF, joint/link, inertial/collision, 실제/시뮬�
 
 ## Position Control 설정
 
-기존 `direct_position` YAML 명칭은 실제 제어 방식과 일치하지 않으므로 리팩터링 시 `position_control`로 통일하는 것을 권장한다.
-
-예:
+calibration YAML의 제어 설정 키는 `position_control`이다.
 
 ```yaml
 position_control:
@@ -36,13 +34,11 @@ position_control:
   velocity_integrator_gain: 0.32
 ```
 
-Xacro도 동일하게:
+Xacro는 이를 다음으로 읽는다.
 
 ```text
 calibration['position_control']
 ```
-
-을 읽도록 수정한다.
 
 이 값은 `QuattroSystem::on_configure()`에서 다음 startup 설정에 사용된다.
 
@@ -55,24 +51,24 @@ Set_Controller_Mode(Position Control, Pos Filter)
 
 ## Hardware parameters
 
-`<ros2_control name="QuattroSystem" type="system">`은 최소 다음 timeout/safety parameter를 전달한다.
+`<ros2_control name="QuattroSystem" type="system">`은 다음 timeout/safety parameter를 전달한다. 모두 필수이며 누락되면 `on_init()`이 실패한다.
 
-권장 항목:
+| parameter | 값 | 의미 |
+|---|---:|---|
+| `feedback_timeout_ms` | 150 | encoder freshness 한도 |
+| `heartbeat_timeout_ms` | 400 | heartbeat freshness 한도 |
+| `startup_timeout_ms` | 1000 | 전 모터 heartbeat/feedback 대기 한도 |
+| `closed_loop_timeout_ms` | 500 | Closed Loop Heartbeat 대기 한도 |
+| `encoder_sync_timeout_ms` | 200 | post-Closed-Loop encoder 대기 한도 |
+| `encoder_sync_frames` | 2 | 초기 위치 확정에 필요한 post-Closed-Loop frame 수 |
+| `command_timeout_ms` | 250 | `write()` watchdog |
+| `scheduling_warning_ms` | 50 | `read()` 주기 경고 임계값 |
+| `rotor_velocity_limit_rev_s` | 5.0 | `Set_Limits` 속도 제한 |
+| `telemetry_period_ms` | 500 | telemetry 주기 |
 
-```text
-feedback_timeout_ms
-heartbeat_timeout_ms
-startup_timeout_ms
-closed_loop_timeout_ms
-encoder_sync_timeout_ms
-encoder_sync_frames
-command_timeout_ms
-scheduling_warning_ms
-rotor_velocity_limit_rev_s
-telemetry_period_ms
-```
+`current_limit` / `position_gain` / `velocity_gain` / `velocity_integrator_gain`은 calibration YAML의 `position_control`에서 온다.
 
-기존 `motor_activation_interval_ms` 같은 고정 지연보다는 실제 Heartbeat Closed Loop 전환과 post-Closed-Loop encoder 수신을 기준으로 activation 완료를 판단하는 것을 우선한다.
+고정 지연 parameter(`motor_activation_interval_ms`)는 제거되었다. activation 완료는 실제 Heartbeat Closed Loop 전환과 post-Closed-Loop encoder 수신으로 판단한다. `encoder_sync_frames`를 2로 두는 근거는 `docs/packages/quattro_hardware.md` 6절과 Xacro 주석에 있다.
 
 ## 실기/시뮬레이션 분기
 

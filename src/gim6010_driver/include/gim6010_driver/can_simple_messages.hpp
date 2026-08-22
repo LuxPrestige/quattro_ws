@@ -15,12 +15,12 @@
 // (or other CAN-Simple-compatible ODrive-lineage driver) over SocketCAN.
 //
 // Coverage: axis lifecycle (Estop/Set_Axis_State/Set_Axis_Node_Id/
-// Disable_Can), Direct Position/Velocity/Torque control, trap-trajectory
-// shaping limits, limits and Direct-mode controller gains, encoder/bus/
-// torque telemetry, error query/clear/save, and a generic RxSdo/TxSdo
-// parameter read/write escape hatch for anything not covered by a named
-// command. MIT motion control lives in mit_protocol.hpp because its wire
-// format (MSB-first bit-packing) is unrelated to the little-endian
+// Disable_Can), position/velocity/torque setpoint commands, controller mode
+// selection, trap-trajectory shaping limits, limits and cascade controller
+// gains, encoder/bus/torque telemetry, error query/clear/save, and a generic
+// RxSdo/TxSdo parameter read/write escape hatch for anything not covered by
+// a named command. MIT motion control lives in mit_protocol.hpp because its
+// wire format (MSB-first bit-packing) is unrelated to the little-endian
 // byte-aligned fields used everywhere in this file.
 //
 // Voltage control (ControlMode::kVoltageControl) is intentionally NOT
@@ -245,9 +245,12 @@ BusVoltageCurrent decode_bus_voltage_current(const CanFrame & frame);
 
 CanFrame encode_clear_errors(uint8_t node_id);
 
-// --- Set_Pos_Gain / Set_Vel_Gains (0x1A/0x1B, Direct Position/Velocity only)
+// --- Set_Pos_Gain / Set_Vel_Gains (0x1A/0x1B) -------------------------------
 // Distinct from MIT's per-command Kp/Kd (mit_protocol.hpp): these configure
-// GDS68's own cascade controller and persist until changed or reset.
+// GDS68's own cascade position/velocity controller and persist until changed
+// or reset. They apply to that controller regardless of which Input_Mode
+// feeds it -- confirmed on real hardware under Position Control + Pos Filter,
+// which is the mode Quattro runs (docs/packages/gim6010_driver.md section 2).
 
 CanFrame encode_set_pos_gain(uint8_t node_id, float pos_gain);
 CanFrame encode_set_vel_gains(uint8_t node_id, float vel_gain, float vel_integrator_gain);

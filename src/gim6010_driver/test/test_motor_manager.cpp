@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <string>
+
 #include "gim6010_driver/can_simple_messages.hpp"
 #include "gim6010_driver/motor_manager.hpp"
 
@@ -96,6 +99,63 @@ TEST(MotorManager, DispatchRoutesTxSdoResponseByEndpointId)
   const auto response = manager.motor(0)->last_sdo_response();
   ASSERT_TRUE(response.has_value());
   EXPECT_EQ(response->endpoint_id, 5);
+}
+
+TEST(MotorManager, EncoderSequenceStartsAtZeroAndCountsOnlyEncoderFrames)
+{
+  MotorManager manager({"can0"}, {MotorRoute{0, "can0"}});
+  ASSERT_NE(manager.motor(0), nullptr);
+  EXPECT_EQ(manager.motor(0)->encoder_sequence(), 0U);
+
+  CanFrame encoder_frame;
+  encoder_frame.id = make_arbitration_id(0, static_cast<uint8_t>(CommandId::kGetEncoderEstimates));
+  encoder_frame.dlc = 8;
+  manager.dispatch(encoder_frame);
+  EXPECT_EQ(manager.motor(0)->encoder_sequence(), 1U);
+  manager.dispatch(encoder_frame);
+  manager.dispatch(encoder_frame);
+  EXPECT_EQ(manager.motor(0)->encoder_sequence(), 3U);
+
+  // Heartbeat and MIT feedback must not advance it: callers use the counter
+  // to answer "did a new 0x009 arrive?", and nothing else can answer that.
+  CanFrame heartbeat_frame;
+  heartbeat_frame.id = make_arbitration_id(0, static_cast<uint8_t>(CommandId::kHeartbeat));
+  heartbeat_frame.dlc = 8;
+  manager.dispatch(heartbeat_frame);
+  CanFrame mit_frame;
+  mit_frame.id = make_arbitration_id(0, static_cast<uint8_t>(CommandId::kMitControl));
+  mit_frame.dlc = 8;
+  manager.dispatch(mit_frame);
+  EXPECT_EQ(manager.motor(0)->encoder_sequence(), 3U);
+}
+
+TEST(MotorManager, EncoderSequenceIsPerMotor)
+{
+  MotorManager manager({"can0"}, {MotorRoute{0, "can0"}, MotorRoute{1, "can0"}});
+
+  CanFrame frame;
+  frame.id = make_arbitration_id(1, static_cast<uint8_t>(CommandId::kGetEncoderEstimates));
+  frame.dlc = 8;
+  manager.dispatch(frame);
+
+  EXPECT_EQ(manager.motor(0)->encoder_sequence(), 0U);
+  EXPECT_EQ(manager.motor(1)->encoder_sequence(), 1U);
+}
+
+TEST(MotorManager, RejectsEmptySocketFactory)
+{
+  EXPECT_THROW(
+    MotorManager({"can0"}, {MotorRoute{0, "can0"}}, MotorManager::SocketFactory{}),
+    std::invalid_argument);
+}
+
+TEST(MotorManager, RejectsSocketFactoryThatReturnsNothing)
+{
+  EXPECT_THROW(
+    MotorManager(
+      {"can0"}, {MotorRoute{0, "can0"}},
+      [](const std::string &) { return std::unique_ptr<CanSocketInterface>{}; }),
+    std::invalid_argument);
 }
 
 TEST(MotorManager, DispatchUpdatesFeedbackFromEitherSource)

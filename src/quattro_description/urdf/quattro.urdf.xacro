@@ -5,7 +5,6 @@
     name="calibration_file"
     default="../config/calibration.yaml"/>
   <xacro:arg name="simulation" default="false"/>
-  <xacro:arg name="motor_activation_interval_ms" default="100"/>
   <xacro:arg name="visual_color_override" default="false"/>
   <xacro:arg name="visual_color" default="0.1 0.1 0.1 1.0"/>
   <xacro:arg
@@ -13,7 +12,7 @@
     default="../../quattro_gazebo/config/gazebo_controllers.yaml"/>
   <xacro:property name="calibration" value="${xacro.load_yaml('$(arg calibration_file)')}"/>
   <xacro:property name="hardware_calibration" value="${calibration['joints']}"/>
-  <xacro:property name="direct_position" value="${calibration['direct_position']}"/>
+  <xacro:property name="position_control" value="${calibration['position_control']}"/>
 
   <!--
     Mesh directory:
@@ -559,14 +558,35 @@
     <ros2_control name="QuattroSystem" type="system">
       <hardware>
         <plugin>quattro_hardware/QuattroSystem</plugin>
-        <param name="current_limit">${direct_position['current_limit']}</param>
-        <param name="position_gain">${direct_position['position_gain']}</param>
-        <param name="velocity_gain">${direct_position['velocity_gain']}</param>
-        <param name="velocity_integrator_gain">${direct_position['velocity_integrator_gain']}</param>
+        <param name="current_limit">${position_control['current_limit']}</param>
+        <param name="position_gain">${position_control['position_gain']}</param>
+        <param name="velocity_gain">${position_control['velocity_gain']}</param>
+        <param name="velocity_integrator_gain">${position_control['velocity_integrator_gain']}</param>
         <param name="feedback_timeout_ms">150</param>
         <param name="heartbeat_timeout_ms">400</param>
         <param name="startup_timeout_ms">1000</param>
-        <param name="motor_activation_interval_ms">$(arg motor_activation_interval_ms)</param>
+        <!--
+          Activation is judged from reported motor state, not from a fixed
+          delay. closed_loop_timeout_ms budgets the Heartbeat that confirms
+          Set_Axis_State took effect (Heartbeat broadcasts at ~100 ms, so
+          this tolerates several missed frames); encoder_sync_timeout_ms
+          budgets the EncoderEstimates that follow it (~10 ms each).
+
+          encoder_sync_frames is 2 rather than 1 deliberately. Heartbeat and
+          Get_Encoder_Estimates are independent broadcast streams, so the
+          first 0x009 seen after a closed-loop Heartbeat may have been
+          sampled by the motor before the transition the Heartbeat reports:
+          the Heartbeat itself can be up to one period old when it arrives.
+          Requiring two frames guarantees at least one estimate
+          sampled strictly after closed-loop control was already in effect,
+          which is exactly the condition that makes the position
+          trustworthy. It costs ~10 ms per joint. A larger value only adds
+          margin for hardware that skews these two streams by more than one
+          frame period, which has not been observed.
+        -->
+        <param name="closed_loop_timeout_ms">500</param>
+        <param name="encoder_sync_timeout_ms">200</param>
+        <param name="encoder_sync_frames">2</param>
         <param name="command_timeout_ms">250</param>
         <param name="scheduling_warning_ms">50</param>
         <param name="rotor_velocity_limit_rev_s">5.0</param>

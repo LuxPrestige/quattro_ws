@@ -1,4 +1,15 @@
-"""Launch the complete Quattro hardware stack."""
+"""
+Launch the Quattro hardware stack.
+
+This file only starts processes. Startup *ordering* lives in
+``quattro_bringup.bringup_manager``, and the GIM6010 startup sequence itself
+lives in ``QuattroSystem`` -- deliberately not in an ``OnProcessExit`` chain
+here, which cannot tell a spawner that succeeded from one that gave up.
+
+Reaching the end of this launch file does not mean the robot is ready; the
+bringup manager's own READY log line does. Gait is not started: bringup
+leaves the robot holding position.
+"""
 
 from launch import LaunchDescription
 from launch.actions import (
@@ -25,13 +36,12 @@ def launch_setup(context, *args, **kwargs):
     """Resolve launch configurations and build the real-hardware actions."""
     use_imu = LaunchConfiguration('use_imu')
     use_teleop = LaunchConfiguration('use_teleop')
+    use_gait = LaunchConfiguration('use_gait')
     start_gait_enabled = LaunchConfiguration('start_gait_enabled')
     staged_initial_pose = LaunchConfiguration('staged_initial_pose')
     initial_pose_duration = LaunchConfiguration('initial_pose_duration')
     calibration_file = LaunchConfiguration('calibration_file')
     controller_file = LaunchConfiguration('controller_file')
-    motor_activation_interval_ms = LaunchConfiguration(
-        'motor_activation_interval_ms')
 
     description_share = FindPackageShare('quattro_description')
     xacro_file = PathJoinSubstitution([
@@ -49,7 +59,6 @@ def launch_setup(context, *args, **kwargs):
                 FindExecutable(name='xacro'), ' ', xacro_file,
                 ' simulation:=false',
                 ' calibration_file:=', calibration_file,
-                ' motor_activation_interval_ms:=', motor_activation_interval_ms,
             ]),
             value_type=str,
         )
@@ -71,39 +80,19 @@ def launch_setup(context, *args, **kwargs):
             {'update_rate': 100, 'use_sim_time': False},
         ],
     )
-    hardware_spawner = Node(
-        package='controller_manager',
-        executable='hardware_spawner',
-        arguments=[
-            'QuattroSystem',
-            '--activate',
-            '--controller-manager', '/controller_manager',
-            '--controller-manager-timeout', '30',
-        ],
+    # Owns the whole startup state machine: configure -> activate ->
+    # verify -> joint_state_broadcaster -> verify /joint_states ->
+    # joint_trajectory_controller -> READY.
+    bringup_manager = Node(
+        package='quattro_bringup',
+        executable='bringup_manager',
+        name='bringup_manager',
         output='screen',
+        parameters=[{'use_sim_time': False}],
     )
-    joint_state_broadcaster = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=[
-            'joint_state_broadcaster',
-            '--controller-manager', '/controller_manager',
-            '--controller-manager-timeout', '30',
-            '--switch-timeout', '30',
-        ],
-        output='screen',
-    )
-    joint_trajectory_controller = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=[
-            'joint_trajectory_controller',
-            '--controller-manager', '/controller_manager',
-            '--controller-manager-timeout', '30',
-            '--switch-timeout', '30',
-        ],
-        output='screen',
-    )
+    # Not part of bringup: started only when explicitly asked for, and even
+    # then it does not move until start_gait_enabled is true. READY is a
+    # holding robot, not a walking one.
     gait_controller = Node(
         package='quattro',
         executable='gait_controller',
@@ -122,6 +111,7 @@ def launch_setup(context, *args, **kwargs):
                 'use_sim_time': False,
             },
         ],
+        condition=IfCondition(use_gait),
     )
     imu = Node(
         package='quattro_sensors',
@@ -150,50 +140,32 @@ def launch_setup(context, *args, **kwargs):
         ],
         condition=IfCondition(use_teleop),
     )
-    start_joint_state_broadcaster = RegisterEventHandler(
-        OnProcessExit(
-            target_action=hardware_spawner,
-            on_exit=[joint_state_broadcaster],
-        )
-    )
 
-    start_trajectory_controller = RegisterEventHandler(
-        OnProcessExit(
-            target_action=joint_state_broadcaster,
-            on_exit=[joint_trajectory_controller],
-        )
-    )
-
-    def start_gait_or_shutdown(event, _context):
-        if event.returncode != 0:
-            return [EmitEvent(event=Shutdown(
-                reason='command controller failed to start'))]
-        return [gait_controller]
-
-    start_gait_controller = RegisterEventHandler(
-        OnProcessExit(
-            target_action=joint_trajectory_controller,
-            on_exit=start_gait_or_shutdown,
-        )
-    )
+    # The only two event handlers left, and neither sequences startup: they
+    # just make sure the stack does not keep running as half a robot.
     stop_on_controller_manager_exit = RegisterEventHandler(
         OnProcessExit(
             target_action=controller_manager,
             on_exit=[EmitEvent(event=Shutdown(reason='controller_manager exited'))],
         )
     )
+    stop_on_bringup_failure = RegisterEventHandler(
+        OnProcessExit(
+            target_action=bringup_manager,
+            on_exit=[EmitEvent(event=Shutdown(reason='bringup_manager exited'))],
+        )
+    )
 
     return [
         robot_state_publisher,
         controller_manager,
-        hardware_spawner,
+        bringup_manager,
+        gait_controller,
         imu,
         game_controller,
         teleop,
-        start_joint_state_broadcaster,
-        start_trajectory_controller,
-        start_gait_controller,
         stop_on_controller_manager_exit,
+        stop_on_bringup_failure,
     ]
 
 
@@ -208,23 +180,24 @@ def generate_launch_description() -> LaunchDescription:
                 bringup_share, 'config', 'calibration.yaml']),
             description='Machine-specific motor calibration YAML.'),
         DeclareLaunchArgument(
-            'motor_activation_interval_ms', default_value='100',
-            description=(
-                'Delay after each motor reaches closed-loop control before '
-                'activating the next motor.')),
-        DeclareLaunchArgument(
             'controller_file',
             default_value=PathJoinSubstitution([
                 bringup_share, 'config', 'hardware_controllers.yaml']),
             description='ros2_control controller configuration.'),
+        DeclareLaunchArgument(
+            'use_gait', default_value='false',
+            description=(
+                'Start the gait controller process. Hardware bringup does '
+                'not need it: READY means the robot holds position.')),
         DeclareLaunchArgument(
             'initial_pose_duration', default_value='5.0',
             description='Seconds used for the initial IK trajectory.'),
         DeclareLaunchArgument(
             'start_gait_enabled', default_value='false',
             description=(
-                'Immediately command the initial gait pose after controller '
-                'activation. Keep false for hardware bringup and gain tests.')),
+                'Immediately command the initial gait pose once the gait '
+                'controller starts. Requires use_gait:=true. Keep false for '
+                'hardware bringup and gain tests.')),
         DeclareLaunchArgument(
             'staged_initial_pose', default_value='true',
             description=(

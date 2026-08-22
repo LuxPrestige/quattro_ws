@@ -10,7 +10,21 @@ namespace gim6010_driver
 
 MotorManager::MotorManager(
   std::vector<std::string> bus_interfaces, std::vector<MotorRoute> routes)
+: MotorManager(
+    std::move(bus_interfaces), std::move(routes),
+    [](const std::string & interface_name) -> std::unique_ptr<CanSocketInterface> {
+      return std::make_unique<CanSocket>(interface_name);
+    })
 {
+}
+
+MotorManager::MotorManager(
+  std::vector<std::string> bus_interfaces, std::vector<MotorRoute> routes,
+  SocketFactory socket_factory)
+{
+  if (!socket_factory) {
+    throw std::invalid_argument("MotorManager requires a non-empty socket factory");
+  }
   if (bus_interfaces.empty()) {
     throw std::invalid_argument("MotorManager requires at least one CAN bus interface");
   }
@@ -23,7 +37,12 @@ MotorManager::MotorManager(
     if (!known_buses.insert(interface_name).second) {
       throw std::invalid_argument("MotorManager bus interface listed more than once: " + interface_name);
     }
-    sockets_.emplace(interface_name, std::make_unique<CanSocket>(interface_name));
+    auto socket = socket_factory(interface_name);
+    if (!socket) {
+      throw std::invalid_argument(
+        "MotorManager socket factory returned nothing for bus: " + interface_name);
+    }
+    sockets_.emplace(interface_name, std::move(socket));
   }
 
   for (const auto & route : routes) {
