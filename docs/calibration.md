@@ -7,7 +7,7 @@ GIM6010-8 encoder 좌표를 ROS joint zero와 맞추기 위한 `offset`을 설�
 실제 설정 파일:
 
 ```text
-/ws/src/quattro_bringup/config/calibration.yaml
+/quattro_ws/src/quattro_bringup/config/calibration.yaml
 ```
 
 ## 실기 activation 원칙
@@ -55,12 +55,12 @@ motor_rev = direction * (joint_rad + offset) * gear_ratio / 2π
 ## 실행
 
 ```bash
-cd /ws
+cd /quattro_ws
 colcon build --symlink-install --packages-select gim6010_driver quattro_hardware
-source /ws/install/setup.bash
+source /quattro_ws/install/setup.bash
 
 ros2 run quattro_hardware calibration_gui \
-  --calibration-file /ws/src/quattro_bringup/config/calibration.yaml
+  --calibration-file /quattro_ws/src/quattro_bringup/config/calibration.yaml
 ```
 
 ## 선택 모터 Enable
@@ -143,7 +143,7 @@ runtime, calibration GUI, tuning GUI, Xacro가 모두 이 키를 사용한다.
 
 ```bash
 xacro src/quattro_description/urdf/quattro.urdf.xacro \
-  calibration_file:=/ws/src/quattro_bringup/config/calibration.yaml \
+  calibration_file:=/quattro_ws/src/quattro_bringup/config/calibration.yaml \
   > /tmp/quattro_calibrated.urdf
 check_urdf /tmp/quattro_calibrated.urdf
 ```

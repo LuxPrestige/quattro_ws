@@ -13,7 +13,7 @@ services:
     network_mode: host
     ipc: host
 
-    working_dir: /ws
+    working_dir: /quattro_ws
 
     environment:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
@@ -21,7 +21,7 @@ services:
       PYTHONUNBUFFERED: "1"
 
     volumes:
-      - .:/ws
+      - .:/quattro_ws
 
     stdin_open: true
     tty: true

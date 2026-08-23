@@ -129,6 +129,8 @@ helper: `wait_for_all_heartbeats()`, `wait_for_all_fresh_feedback()`, `check_pre
 
 `bringup_manager` 노드가 hardware/controller state를 명시적 상태 머신으로 관리한다.
 
+READY에서 latched `/bringup/ready`(`std_msgs/Bool`)를 발행하고 그 flag를 들고 살아 있는다. gait controller는 `wait_for_bringup_ready: true`로 이 flag를 기다리며, `joint_trajectory_controller` ACTIVE 이전에 initial pose 궤적이 나가 버리는 문제를 노드 안에서 막는다. launch 파일의 `OnProcessExit`은 teardown 용도로만 남는다.
+
 ## 목표 bringup 상태
 
 ```text

@@ -51,6 +51,7 @@ src/quattro/quattro/
 | `imu_auto` | `std_msgs/Bool` | IMU balance PID on/off |
 | `gait/clearance_height`, `gait/penetration_depth`, `gait/swing_duration` | `std_msgs/Float64` | 실행 중 gait 파라미터 조정(검증 실패 시 로그만 남기고 무시) |
 | `contacts/<leg>` (4개) | `std_msgs/Bool` | 다리별 접지 상태(현재 실제 센서 미연결, 기본 `False`) |
+| `bringup_ready_topic` (기본 `/bringup/ready`) | `std_msgs/Bool` (latched) | `wait_for_bringup_ready: true`일 때만 구독 |
 
 **발행**: `<trajectory_controller_name>/joint_trajectory` (기본 `joint_trajectory_controller/joint_trajectory`). 매 제어 주기 `GaitGenerator.update`가 계산한 발끝 목표 위치를 IK로 관절 각도(`q_des = IK(p_des)`)로 변환해 `positions`만 채운 `JointTrajectory`를 발행한다(속도 feed-forward 없이 순수 위치 제어).
 
@@ -63,6 +64,8 @@ src/quattro/quattro/
 - `_controlled_body_rpy`는 `balance_enabled`일 때만 IMU roll/pitch 오차에 대해 PID(P/I/D, integral clamp)를 적용해 목표 body rpy를 보정한다. 비활성 시 적분 항을 초기화한다.
 - `start_enabled`가 참이거나 `/gait/enable`이 처음 호출될 때 `staged_initial_pose`가 참이면 12관절을 3관절씩(다리 단위) 순차 전환하는 `JointTrajectory`를 만들어 급격한 동시 하중을 피한다.
 - IK 실패(`UnreachableTargetError`/`ValueError`)는 명령을 거부하고 에러 로그만 남긴다(이전 목표를 그대로 유지).
+- `wait_for_bringup_ready`(기본 `false`)가 참이면 `/bringup/ready`에서 `data: true`를 받기 전까지 아무 것도 발행하지 않는다. inactive 상태의 `joint_trajectory_controller`는 trajectory를 조용히 버리므로, 첫 궤적인 staged initial pose가 JTC ACTIVE 이전에 나가면 그대로 사라진다. flag는 latched라 이 노드가 bringup보다 먼저 시작하든 나중에 시작하든 동작한다. 대기 중 도착한 `cmd_vel`은 ready 시점에 stale로 처리해 즉시 걷기 시작하지 않는다.
+- 실기 launch(`hardware.launch.py`)는 이 파라미터를 `true`로 넘긴다. bringup manager가 없는 Gazebo/시각화 launch는 기본 `false`를 그대로 쓴다.
 
 ## `pose_controller` 노드
 

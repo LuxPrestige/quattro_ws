@@ -2,7 +2,7 @@
 
 ## 1. 기본 원칙
 
-ROS 2 개발, 빌드, 테스트는 기본적으로 Docker 컨테이너 내부 `/ws`에서 수행한다.
+ROS 2 개발, 빌드, 테스트는 기본적으로 Docker 컨테이너 내부 `/quattro_ws`에서 수행한다.
 
 ```bash
 cd ~/quattro_ws
@@ -14,13 +14,13 @@ docker compose exec dev bash
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-cd /ws
+cd /quattro_ws
 ```
 
 빌드 후:
 
 ```bash
-source /ws/install/setup.bash
+source /quattro_ws/install/setup.bash
 ```
 
 ## 2. 기본 빌드
@@ -28,7 +28,7 @@ source /ws/install/setup.bash
 전체 빌드:
 
 ```bash
-cd /ws
+cd /quattro_ws
 colcon build \
   --symlink-install \
   --event-handlers console_direct+
@@ -128,7 +128,7 @@ Raspberry Pi에서는 NVIDIA override를 사용하지 않는다.
 ## 6. URDF 검사
 
 ```bash
-cd /ws
+cd /quattro_ws
 xacro src/quattro_description/urdf/quattro.urdf.xacro > /tmp/quattro.urdf
 check_urdf /tmp/quattro.urdf
 ```

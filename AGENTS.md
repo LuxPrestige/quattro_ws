@@ -73,7 +73,7 @@ quattro
 ## 변경 후 최소 검증
 
 ```bash
-cd /ws
+cd /quattro_ws
 colcon build --symlink-install --event-handlers console_direct+
 colcon test --event-handlers console_direct+
 ```

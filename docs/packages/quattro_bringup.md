@@ -80,9 +80,11 @@ joint_state_broadcaster ACTIVE
 joint_trajectory_controller ACTIVE
  ↓
 READY / HOLD
+ ↓
+/bringup/ready latched true
 ```
 
-Gait는 이 sequence에 포함하지 않는다.
+Gait는 이 sequence에 포함하지 않는다. gait controller 프로세스는 다른 노드와 함께 시작하되, `/bringup/ready`를 받기 전까지 아무 trajectory도 발행하지 않는다.
 
 ## 하드웨어 activation 규칙
 
@@ -114,10 +116,14 @@ launch 파일은 프로세스 실행만 담당한다.
 
 startup 순서는 `bringup_manager`가 소유한다. `OnProcessExit` chain으로 startup 상태 머신을 구현하지 않는다. spawner 프로세스의 종료는 "성공해서 끝났다"와 "포기해서 끝났다"를 구분하지 못하고, 그 사이에 검증 단계를 넣을 자리도 없기 때문이다.
 
+모든 노드는 병렬로 시작하며 gait controller도 예외가 아니다. gait의 대기는 launch event handler가 아니라 노드 안에 있다. `hardware.launch.py`는 gait controller에 `wait_for_bringup_ready: true`를 넘기고, 노드는 `/bringup/ready`를 받을 때까지 발행을 보류한다. inactive 상태의 `joint_trajectory_controller`는 들어온 trajectory를 조용히 버리므로, JTC ACTIVE 이전에 나간 staged initial pose는 그대로 사라지고 로봇은 나중에 gait stance로 튀게 된다.
+
 남아 있는 `OnProcessExit`은 두 개뿐이며 둘 다 순서 제어가 아니라 teardown용이다.
 
 - `controller_manager` 종료 → 전체 shutdown
 - `bringup_manager` 종료 → 전체 shutdown (FAULT 시 non-zero exit)
+
+`bringup_manager`는 READY 이후에도 살아 있으므로 그 종료는 언제나 teardown 신호다.
 
 ### launch argument
 
@@ -126,7 +132,7 @@ startup 순서는 `bringup_manager`가 소유한다. `OnProcessExit` chain으로
 | `calibration_file` | `config/calibration.yaml` | 기체별 calibration YAML |
 | `controller_file` | `config/hardware_controllers.yaml` | controller 설정 |
 | `use_gait` | `false` | gait controller 프로세스 시작 여부 |
-| `start_gait_enabled` | `false` | gait 시작 시 즉시 initial pose 명령 (`use_gait:=true` 필요) |
+| `start_gait_enabled` | `false` | READY 직후 즉시 initial pose 명령 (`use_gait:=true` 필요) |
 | `staged_initial_pose` | `true` | initial pose를 다리 단위로 순차 이동 |
 | `initial_pose_duration` | `5.0` | initial pose 궤적 시간(초) |
 | `use_imu` | `true` | BNO085 노드 시작 |
@@ -160,6 +166,7 @@ FAULT
 | `VERIFY_HARDWARE` | `list_hardware_components` |
 | `START_JSB` / `START_JTC` | `load_controller`, `configure_controller`, `switch_controller`(STRICT), `list_controllers` |
 | `VERIFY_JOINT_STATES` | `/joint_states` 구독 |
+| `READY` | `/bringup/ready` latched 발행 |
 
 `ACTIVATE_HARDWARE` 성공은 12축 모두가 Closed Loop에 들어가고 Closed Loop 이후 encoder sync가 끝났음을 의미한다. 그 판정 자체는 `QuattroSystem::on_activate()`가 하고, bringup manager는 결과만 받는다.
 
@@ -174,6 +181,19 @@ FAULT
 | `joint_state_timeout` | `10.0` | 유효 `/joint_states` 대기 한도(초) |
 | `expected_joints` | `12` | 필요한 joint 수 |
 | `shutdown_on_fault` | `true` | FAULT 시 non-zero exit |
+| `ready_topic` | `bringup/ready` | READY 발행 토픽 |
+
+### `/bringup/ready`
+
+| 항목 | 값 |
+|---|---|
+| 타입 | `std_msgs/Bool` (`data: true`) |
+| QoS | `depth 1`, `transient local`(latched) |
+| 발행 시점 | `READY` 진입 직후 1회 |
+
+READY는 event가 아니라 state이므로 latched로 발행한다. bringup이 끝난 뒤 수동으로 다시 띄운 gait controller처럼 늦게 구독한 노드도 즉시 flag를 받는다.
+
+transient local sample은 publisher가 살아 있는 동안만 유지되므로 `bringup_manager`는 READY 이후 종료하지 않고 flag를 들고 남는다. 따라서 이 프로세스의 종료 코드는 더 이상 "bringup 완료" 신호가 아니다. FAULT면 non-zero로 즉시 종료하고, READY 이후에는 launch teardown에서만 종료한다.
 
 FAULT에서 bringup manager는 모터에 명령을 보내지 않는다. 하드웨어 fault는 이미 `QuattroSystem` 내부에서 전 축 Idle로 처리되며, controller 기동 실패 같은 bringup 측 실패를 두 번째 주체가 같은 bus에 axis-state 명령을 보내 "수습"하게 두지 않는다.
 
@@ -188,6 +208,7 @@ motor shafts           current-position hold
 joint_state_broadcaster ACTIVE
 joint_trajectory_controller ACTIVE
 joint_states           valid
+/bringup/ready          latched true
 Gait                    OFF
 ```
 
@@ -224,6 +245,7 @@ joint별 CAN mapping/direction/offset은 `joints` 아래에 둔다.
 ros2 control list_hardware_components
 ros2 control list_controllers
 ros2 topic hz /joint_states
+ros2 topic echo --once /bringup/ready
 ip -details -statistics link show can0
 ip -details -statistics link show can1
 ```
@@ -234,6 +256,7 @@ ip -details -statistics link show can1
 - JSB active
 - JTC active
 - `/joint_states`가 12축 유효 encoder 기반
+- `/bringup/ready`가 `data: true`로 latched
 - can0/can1 ERROR-ACTIVE
 - Gait가 명시적 enable 전에는 동작하지 않음
 

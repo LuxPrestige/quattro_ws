@@ -3,8 +3,8 @@ set -e
 
 source "/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
 
-if [ -f "/ws/install/setup.bash" ]; then
-    source "/ws/install/setup.bash"
+if [ -f "/quattro_ws/install/setup.bash" ]; then
+    source "/quattro_ws/install/setup.bash"
 fi
 
 exec "$@"

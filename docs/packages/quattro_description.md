@@ -85,7 +85,7 @@ simulation:=true
 ## 검증
 
 ```bash
-cd /ws
+cd /quattro_ws
 xacro src/quattro_description/urdf/quattro.urdf.xacro > /tmp/quattro.urdf
 check_urdf /tmp/quattro.urdf
 ```

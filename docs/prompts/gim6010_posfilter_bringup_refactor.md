@@ -434,10 +434,10 @@ docs/packages/quattro_description.md
 
 ## 10. 검증
 
-Docker 컨테이너 `/ws` 기준으로 수행하라.
+Docker 컨테이너 `/quattro_ws` 기준으로 수행하라.
 
 ```bash
-cd /ws
+cd /quattro_ws
 colcon build --symlink-install --event-handlers console_direct+
 colcon test --event-handlers console_direct+
 colcon test-result --verbose

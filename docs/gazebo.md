@@ -109,7 +109,7 @@ Gait controller는 `cmd_vel` -> `GaitGenerator`(발끝 목표 궤적) -> IK(관�
 Gazebo 관련 변경 후 최소한 다음을 수행한다.
 
 ```bash
-cd /ws
+cd /quattro_ws
 
 xacro src/quattro_description/urdf/quattro.urdf.xacro \
   simulation:=true > /tmp/quattro_sim.urdf

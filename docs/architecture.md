@@ -216,7 +216,7 @@ QuattroSystem::create_motor_manager() 하드웨어 계층의 유일한 seam
 ## 11. URDF/Xacro 검증
 
 ```bash
-cd /ws
+cd /quattro_ws
 xacro src/quattro_description/urdf/quattro.urdf.xacro > /tmp/quattro.urdf
 check_urdf /tmp/quattro.urdf
 ```

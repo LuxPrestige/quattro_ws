@@ -90,8 +90,8 @@ RUN set -eux; \
         > "/etc/sudoers.d/${USERNAME}"; \
     chmod 0440 "/etc/sudoers.d/${USERNAME}"
 
-RUN mkdir -p /ws \
-    && chown -R ${USERNAME}:${USERNAME} /ws
+RUN mkdir -p /quattro_ws \
+    && chown -R ${USERNAME}:${USERNAME} /quattro_ws
 
 COPY docker/entrypoint.sh /usr/local/bin/quattro_ws_entrypoint.sh
 COPY docker/ros_setup.bash /usr/local/bin/quattro_ws_ros_setup.bash
@@ -101,7 +101,7 @@ RUN chmod +x /usr/local/bin/quattro_ws_entrypoint.sh \
         >> "/home/${USERNAME}/.bashrc"
 
 USER ${USERNAME}
-WORKDIR /ws
+WORKDIR /quattro_ws
 
 ENTRYPOINT ["/usr/local/bin/quattro_ws_entrypoint.sh"]
 CMD ["bash"]

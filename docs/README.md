@@ -72,7 +72,7 @@ Gait                    OFF
 Robot                   READY / HOLD
 ```
 
-Gait와 초기 자세 이동은 hardware bringup과 분리되어 있다. gait controller 프로세스는 `use_gait:=true`일 때만 시작된다.
+Gait와 초기 자세 이동은 hardware bringup과 분리되어 있다. gait controller 프로세스는 `use_gait:=true`일 때만 시작되고, 시작되더라도 `bringup_manager`가 READY에서 발행하는 latched `/bringup/ready`를 받기 전까지 어떤 trajectory도 발행하지 않는다.
 
 `READY` 판정은 `bringup_manager`가 로그로 명시한다. launch 파일이 끝까지 진행되는 것 자체는 READY를 뜻하지 않는다.
 
@@ -82,6 +82,7 @@ Gait와 초기 자세 이동은 hardware bringup과 분리되어 있다. gait co
 ros2 control list_hardware_components
 ros2 control list_controllers
 ros2 topic hz /joint_states
+ros2 topic echo --once /bringup/ready
 ip -details -statistics link show can0
 ip -details -statistics link show can1
 ```

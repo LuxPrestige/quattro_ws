@@ -6,9 +6,14 @@ This file only starts processes. Startup *ordering* lives in
 lives in ``QuattroSystem`` -- deliberately not in a chain of spawner exits
 here, which cannot tell a spawner that succeeded from one that gave up.
 
-The one process that does start off another's exit is gait_controller, and
-it is gated on ``bringup_manager``'s exit *code*: 0 only when every stage,
-including joint_trajectory_controller activation, actually succeeded.
+Every process therefore starts in parallel, gait_controller included. It
+does not publish anything until bringup latches ``/bringup/ready``, which
+the bringup manager only does once joint_trajectory_controller is active;
+that wait lives in the node, not in an event handler here.
+
+The two ``OnProcessExit`` handlers left are teardown, not ordering: if
+either controller_manager or bringup_manager exits, the whole launch goes
+down.
 
 Reaching the end of this launch file does not mean the robot is ready; the
 bringup manager's own READY log line does. Gait is off unless use_gait is
@@ -94,9 +99,13 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
         parameters=[{'use_sim_time': False}],
     )
-    # Started only when explicitly asked for (use_gait), and only after
-    # bringup reports READY -- see start_gait_when_ready below. READY is a
-    # holding robot, not a walking one.
+    # Started only when explicitly asked for (use_gait). It starts with
+    # everything else, but wait_for_bringup_ready keeps it silent until
+    # bringup latches /bringup/ready: an inactive joint_trajectory_controller
+    # drops trajectories without a word, so a staged initial pose published
+    # before JTC is active is lost, and the robot jumps to the gait stance
+    # later instead of easing into it. READY is a holding robot, not a
+    # walking one.
     gait_controller = Node(
         package='quattro',
         executable='gait_controller',
@@ -108,6 +117,7 @@ def launch_setup(context, *args, **kwargs):
                 'start_enabled': ParameterValue(
                     start_gait_enabled, value_type=bool),
                 'trajectory_controller_name': 'joint_trajectory_controller',
+                'wait_for_bringup_ready': True,
                 'initial_pose_duration': ParameterValue(
                     initial_pose_duration, value_type=float),
                 'staged_initial_pose': ParameterValue(
@@ -151,26 +161,14 @@ def launch_setup(context, *args, **kwargs):
             on_exit=[EmitEvent(event=Shutdown(reason='controller_manager exited'))],
         )
     )
-
-    def on_bringup_finished(event, _context):
-        """Start gait only if bringup actually reached READY."""
-        if event.returncode != 0:
-            return [EmitEvent(event=Shutdown(reason='bringup failed'))]
-        # gait_controller carries IfCondition(use_gait), so this is a no-op
-        # unless gait was explicitly asked for.
-        return [gait_controller]
-
-    # This is a dependency, not a startup state machine: gait_controller
-    # publishes its staged initial-pose trajectory as soon as it has
-    # /joint_states, and joint_trajectory_controller drops trajectories
-    # silently while inactive (subscriber_is_active_). Starting the two in
-    # parallel therefore loses the initial pose entirely and leaves the
-    # robot to jump to the gait stance later, so gait must not start until
-    # bringup has confirmed JTC is active.
-    start_gait_when_ready = RegisterEventHandler(
+    # bringup_manager stays alive after READY to hold the latched
+    # /bringup/ready flag, so its exit is never "bringup finished": it is a
+    # FAULT before READY, or the flag going away under a robot that other
+    # nodes are still commanding. Both mean the stack must come down.
+    stop_on_bringup_manager_exit = RegisterEventHandler(
         OnProcessExit(
             target_action=bringup_manager,
-            on_exit=on_bringup_finished,
+            on_exit=[EmitEvent(event=Shutdown(reason='bringup_manager exited'))],
         )
     )
 
@@ -178,11 +176,12 @@ def launch_setup(context, *args, **kwargs):
         robot_state_publisher,
         controller_manager,
         bringup_manager,
+        gait_controller,
         imu,
         game_controller,
         teleop,
         stop_on_controller_manager_exit,
-        start_gait_when_ready,
+        stop_on_bringup_manager_exit,
     ]
 
 
@@ -212,8 +211,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             'start_gait_enabled', default_value='false',
             description=(
-                'Immediately command the initial gait pose once the gait '
-                'controller starts. Requires use_gait:=true. Keep false for '
+                'Immediately command the initial gait pose once bringup '
+                'reports ready. Requires use_gait:=true. Keep false for '
                 'hardware bringup and gain tests.')),
         DeclareLaunchArgument(
             'staged_initial_pose', default_value='true',

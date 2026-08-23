@@ -22,11 +22,17 @@ READY means:
 * ``joint_trajectory_controller`` active
 * gait OFF -- the robot holds position and is not walking
 
-The process exits 0 on READY and non-zero on FAULT. That exit code is the
+On READY the node publishes a latched (transient-local) ``True`` on
+``/bringup/ready`` and then stays alive, because a transient-local sample
+only survives as long as its publisher does. That retained flag is the
 ordering signal anything downstream of a working robot depends on -- in
 particular gait startup, which must not publish a trajectory before
 ``joint_trajectory_controller`` is active, because an inactive JTC drops
-incoming trajectories silently.
+incoming trajectories silently. Late subscribers get the flag immediately,
+so the waiting node does not have to be started after this one.
+
+The process therefore never exits while the robot is ready: it exits
+non-zero on FAULT, and otherwise only when the launch tears down.
 """
 
 from enum import Enum
@@ -42,12 +48,16 @@ from controller_manager_msgs.srv import (
 )
 from lifecycle_msgs.msg import State
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 
 HARDWARE_COMPONENT = 'QuattroSystem'
 JOINT_STATE_BROADCASTER = 'joint_state_broadcaster'
 JOINT_TRAJECTORY_CONTROLLER = 'joint_trajectory_controller'
+READY_TOPIC = 'bringup/ready'
 
 
 class BringupState(Enum):
@@ -75,6 +85,7 @@ class BringupManager(Node):
         self.declare_parameter('joint_state_timeout', 10.0)
         self.declare_parameter('expected_joints', 12)
         self.declare_parameter('shutdown_on_fault', True)
+        self.declare_parameter('ready_topic', READY_TOPIC)
 
         prefix = self.get_parameter('controller_manager').value.rstrip('/')
         self._service_timeout = float(self.get_parameter('service_timeout').value)
@@ -98,8 +109,18 @@ class BringupManager(Node):
             SwitchController, f'{prefix}/switch_controller')
 
         self._last_joint_state: JointState | None = None
-        self.create_subscription(
+        self._joint_state_subscription = self.create_subscription(
             JointState, 'joint_states', self._on_joint_state, 10)
+
+        # Transient local with depth 1: READY is a state, not an event, so a
+        # subscriber that connects after bringup finished -- a gait
+        # controller restarted by hand, say -- must still be told the robot
+        # is up instead of waiting forever for a message that already went
+        # out.
+        self._ready_publisher = self.create_publisher(
+            Bool,
+            str(self.get_parameter('ready_topic').value),
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         self.state = BringupState.WAIT_CONTROLLER_MANAGER
 
@@ -289,6 +310,10 @@ class BringupManager(Node):
                 continue
             self.get_logger().info(
                 f'/joint_states is valid: {self._expected_joints} joints.')
+            # Nothing after this stage reads /joint_states, and this node
+            # now outlives bringup to hold the ready flag, so stop taking
+            # the 100 Hz callback.
+            self.destroy_subscription(self._joint_state_subscription)
             return True
         return self._fail(
             f'no /joint_states message with {self._expected_joints} finite '
@@ -319,6 +344,7 @@ class BringupManager(Node):
                 return False
 
         self.state = BringupState.READY
+        self._ready_publisher.publish(Bool(data=True))
         self.get_logger().info(
             '--> READY\n'
             f'  {HARDWARE_COMPONENT:<28} ACTIVE\n'
@@ -327,34 +353,40 @@ class BringupManager(Node):
             f'  {JOINT_STATE_BROADCASTER:<28} ACTIVE\n'
             f'  {JOINT_TRAJECTORY_CONTROLLER:<28} ACTIVE\n'
             '  Gait                         OFF\n'
+            f'  {self._ready_publisher.topic_name:<28} LATCHED true\n'
             'The robot is holding position. READY is not walking: start the '
             'gait explicitly when you want it.')
         return True
 
 
 def main(args=None) -> None:
-    """Run the bringup state machine to completion and exit with its result."""
+    """Run the bringup state machine, then hold the ready flag until shutdown."""
     rclpy.init(args=args)
     node = BringupManager()
     exit_code = 0
     try:
-        if not node.run():
+        if node.run():
+            # Unlike the previous one-shot design, this node stays up after
+            # READY. The latched /bringup/ready sample it published lives
+            # only as long as this publisher, and that retained flag -- not
+            # a process exit -- is what gait startup waits on. Ordering
+            # stays here, in the state machine that actually knows whether
+            # joint_trajectory_controller is active, instead of in the
+            # launch file.
+            rclpy.spin(node)
+        else:
             exit_code = 1
-    except KeyboardInterrupt:
-        exit_code = 1
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C or launch teardown after READY is not a bringup failure.
+        exit_code = 0 if node.state is BringupState.READY else 1
     finally:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 
-    # This node is a one-shot orchestrator: once READY is reached it has no
-    # ongoing job, no subscribers and no services, so staying alive would
-    # only hide the one thing callers need -- whether bringup succeeded.
-    # Exiting turns that into a process result the launch file can act on:
-    # 0 means every stage passed and the robot is holding position, non-zero
-    # means it did not. This is the signal gait startup is gated on, and it
-    # is meaningful in a way a spawner's exit never was: a spawner exits the
-    # same way whether it succeeded or gave up.
+    # An exit is now always the end of the run: FAULT before READY, or
+    # teardown afterwards. The launch file treats it as a shutdown signal
+    # either way, and the non-zero code says which of the two it was.
     if exit_code and not node.shutdown_on_fault:
         return
     raise SystemExit(exit_code)

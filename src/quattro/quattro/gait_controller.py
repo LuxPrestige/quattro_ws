@@ -14,7 +14,7 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, qos_profile_sensor_data, QoSProfile
 from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Bool, Float64
 from std_srvs.srv import SetBool
@@ -83,6 +83,10 @@ class GaitController(Node):
         trajectory_controller_name = str(self.declare_parameter(
             'trajectory_controller_name',
             'joint_trajectory_controller').value)
+        wait_for_bringup_ready = bool(self.declare_parameter(
+            'wait_for_bringup_ready', False).value)
+        bringup_ready_topic = str(self.declare_parameter(
+            'bringup_ready_topic', '/bringup/ready').value)
         self._pid_kd = float(self.declare_parameter('pose_pid.kd', 0.05).value)
         self._pid_limit = float(self.declare_parameter(
             'pose_pid.integral_limit', 0.5).value)
@@ -150,6 +154,23 @@ class GaitController(Node):
             )
             for name in self._contacts
         ]
+        # An inactive joint_trajectory_controller drops incoming
+        # trajectories silently, so the very first one -- the staged initial
+        # pose -- is lost if it goes out before JTC is active, and the robot
+        # then jumps straight to the gait stance later. On real hardware
+        # bringup owns that ordering and reports it as a latched flag; the
+        # flag is retained, so this node may start before, during or after
+        # bringup and still sees it. Simulation and visualization have no
+        # bringup manager and leave this off.
+        self._bringup_ready = not wait_for_bringup_ready
+        if wait_for_bringup_ready:
+            self.get_logger().info(
+                f'Holding all trajectory output until {bringup_ready_topic} '
+                'reports the robot is ready.')
+            self.create_subscription(
+                Bool, bringup_ready_topic, self._on_bringup_ready,
+                QoSProfile(
+                    depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._timer = self.create_timer(
             1.0 / self._control_frequency, self._update)
 
@@ -177,6 +198,19 @@ class GaitController(Node):
             orientation.x, orientation.y, orientation.z, orientation.w)
         self._imu_rates = (
             message.angular_velocity.x, message.angular_velocity.y)
+
+    def _on_bringup_ready(self, message: Bool) -> None:
+        if not message.data or self._bringup_ready:
+            return
+        self._bringup_ready = True
+        # The command clock has been running while output was held, so a
+        # stale cmd_vel must not be treated as a fresh walk command here.
+        self._last_command_time = (
+            self.get_clock().now() -
+            Duration(seconds=2.0 * self._command_timeout))
+        self.get_logger().info(
+            'Bringup is ready: joint_trajectory_controller is active, '
+            'trajectory output enabled.')
 
     def _on_estop(self, message: Bool) -> None:
         self._estop = message.data
@@ -243,7 +277,7 @@ class GaitController(Node):
         )
 
     def _update(self) -> None:
-        if not self._output_enabled:
+        if not self._output_enabled or not self._bringup_ready:
             return
         now = self.get_clock().now()
         if (self._initial_pose_deadline is not None and
