@@ -155,7 +155,7 @@ joint_trajectory_controller
 READY / HOLD
 ```
 
-Gait는 기본 OFF이며 hardware bringup과 분리한다. `hardware.launch.py`는 `use_gait:=true`일 때만 gait controller 프로세스를 띄운다.
+Gait는 기본 OFF이며 hardware bringup과 분리한다. `hardware.launch.py`는 `use_gait:=true`일 때만 gait controller 프로세스를 띄우고, 이때는 `start_gait_enabled` 기본값(`true`)에 따라 READY 직후 stepping 모드로 initial pose까지 자동으로 이동한다.
 
 ## 7. ROS 2 인터페이스
 

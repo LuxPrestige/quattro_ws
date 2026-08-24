@@ -62,7 +62,7 @@ src/quattro/quattro/
 - `estop=true`면 속도를 즉시 0으로 램프하고 이후 아무 것도 발행하지 않는다.
 - 명령 나이(`command_timeout`, 기본 0.5 s)를 넘으면 즉시 정지 램프를 사용한다(정상 정지 대비 더 빠른 `stop_ramp_rate`).
 - `_controlled_body_rpy`는 `balance_enabled`일 때만 IMU roll/pitch 오차에 대해 PID(P/I/D, integral clamp)를 적용해 목표 body rpy를 보정한다. 비활성 시 적분 항을 초기화한다.
-- `start_enabled`가 참이거나 `/gait/enable`이 처음 호출될 때 `staged_initial_pose`가 참이면 12관절을 3관절씩(다리 단위) 순차 전환하는 `JointTrajectory`를 만들어 급격한 동시 하중을 피한다.
+- `start_enabled`가 참이거나 `/gait/enable`이 처음 호출될 때 `staged_initial_pose`가 참이면 네 다리의 hip 관절 4개를 먼저 동시에 옮기고 이어서 나머지 8관절을 동시에 옮기는 2단계 `JointTrajectory`를 만들어 급격한 동시 하중을 피한다. 두 단계는 `initial_pose_duration`을 절반씩 나눠 쓰므로 전체 전환 시간은 `initial_pose_duration`과 같다.
 - IK 실패(`UnreachableTargetError`/`ValueError`)는 명령을 거부하고 에러 로그만 남긴다(이전 목표를 그대로 유지).
 - `wait_for_bringup_ready`(기본 `false`)가 참이면 `/bringup/ready`에서 `data: true`를 받기 전까지 아무 것도 발행하지 않는다. inactive 상태의 `joint_trajectory_controller`는 trajectory를 조용히 버리므로, 첫 궤적인 staged initial pose가 JTC ACTIVE 이전에 나가면 그대로 사라진다. flag는 latched라 이 노드가 bringup보다 먼저 시작하든 나중에 시작하든 동작한다. 대기 중 도착한 `cmd_vel`은 ready 시점에 stale로 처리해 즉시 걷기 시작하지 않는다.
 - 실기 launch(`hardware.launch.py`)는 이 파라미터를 `true`로 넘긴다. bringup manager가 없는 Gazebo/시각화 launch는 기본 `false`를 그대로 쓴다.

@@ -74,6 +74,12 @@ Robot                   READY / HOLD
 
 Gait와 초기 자세 이동은 hardware bringup과 분리되어 있다. gait controller 프로세스는 `use_gait:=true`일 때만 시작되고, 시작되더라도 `bringup_manager`가 READY에서 발행하는 latched `/bringup/ready`를 받기 전까지 어떤 trajectory도 발행하지 않는다.
 
+```bash
+ros2 launch quattro_bringup hardware.launch.py use_gait:=true
+```
+
+`use_gait:=true`로 띄우면 `start_gait_enabled` 기본값이 `true`이므로 READY 직후 조이스틱 조작 없이 stepping 모드로 initial pose(총 5초)로 이동한다. READY 배너의 `Gait` 줄도 `STEPPING`으로 바뀐다. 예전처럼 `/gait/enable` 호출 전까지 가만히 있게 하려면 `start_gait_enabled:=false`를 준다.
+
 `READY` 판정은 `bringup_manager`가 로그로 명시한다. launch 파일이 끝까지 진행되는 것 자체는 READY를 뜻하지 않는다.
 
 ## 기본 검증

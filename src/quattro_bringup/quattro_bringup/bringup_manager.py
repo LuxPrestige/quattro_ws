@@ -86,6 +86,11 @@ class BringupManager(Node):
         self.declare_parameter('expected_joints', 12)
         self.declare_parameter('shutdown_on_fault', True)
         self.declare_parameter('ready_topic', READY_TOPIC)
+        # Purely cosmetic: the manager never starts the gait itself, but the
+        # READY banner must not claim the robot is holding position when the
+        # launch also started a gait controller that moves to its initial
+        # pose the moment this flag is latched.
+        self.declare_parameter('gait_autostart', False)
 
         prefix = self.get_parameter('controller_manager').value.rstrip('/')
         self._service_timeout = float(self.get_parameter('service_timeout').value)
@@ -94,6 +99,8 @@ class BringupManager(Node):
         self._expected_joints = int(self.get_parameter('expected_joints').value)
         self.shutdown_on_fault = bool(
             self.get_parameter('shutdown_on_fault').value)
+        self._gait_autostart = bool(
+            self.get_parameter('gait_autostart').value)
 
         self._set_hardware_state = self.create_client(
             SetHardwareComponentState, f'{prefix}/set_hardware_component_state')
@@ -345,6 +352,14 @@ class BringupManager(Node):
 
         self.state = BringupState.READY
         self._ready_publisher.publish(Bool(data=True))
+        gait_line = ('STEPPING (moving to the initial pose)'
+                     if self._gait_autostart else 'OFF')
+        closing = (
+            'The robot is moving to its initial pose now and then holds the '
+            'stepping stance. Keep clear of the legs.'
+            if self._gait_autostart else
+            'The robot is holding position. READY is not walking: start the '
+            'gait explicitly when you want it.')
         self.get_logger().info(
             '--> READY\n'
             f'  {HARDWARE_COMPONENT:<28} ACTIVE\n'
@@ -352,10 +367,9 @@ class BringupManager(Node):
             '  Encoder                      post-closed-loop synchronized\n'
             f'  {JOINT_STATE_BROADCASTER:<28} ACTIVE\n'
             f'  {JOINT_TRAJECTORY_CONTROLLER:<28} ACTIVE\n'
-            '  Gait                         OFF\n'
+            f'  {"Gait":<28} {gait_line}\n'
             f'  {self._ready_publisher.topic_name:<28} LATCHED true\n'
-            'The robot is holding position. READY is not walking: start the '
-            'gait explicitly when you want it.')
+            f'{closing}')
         return True
 
 

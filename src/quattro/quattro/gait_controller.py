@@ -33,18 +33,14 @@ def ramp_value(
 
 def staged_joint_targets(
         current: list[float], target: list[float],
-        joints_per_stage: int = 3) -> list[list[float]]:
-    """Build targets that move one contiguous joint group per stage."""
+        joints_per_leg: int = 3) -> list[list[float]]:
+    """Build targets that move every hip joint before the remaining joints."""
     if (len(current) != len(target) or not current or
-            joints_per_stage <= 0 or len(current) % joints_per_stage != 0):
+            joints_per_leg <= 0 or len(current) % joints_per_leg != 0):
         raise ValueError('invalid staged joint target dimensions')
-    staged = list(current)
-    targets = []
-    for start in range(0, len(staged), joints_per_stage):
-        staged[start:start + joints_per_stage] = target[
-            start:start + joints_per_stage]
-        targets.append(list(staged))
-    return targets
+    hips = list(current)
+    hips[::joints_per_leg] = target[::joints_per_leg]
+    return [hips, list(target)]
 
 
 class GaitController(Node):
@@ -349,15 +345,18 @@ class GaitController(Node):
             if self._staged_initial_pose:
                 staged_targets = staged_joint_targets(
                     list(start.positions), list(point.positions))
+                # initial_pose_duration is the budget for the whole
+                # transition, so the stages share it evenly.
+                stage_duration = (
+                    self._initial_pose_duration / len(staged_targets))
                 for stage, target in enumerate(staged_targets, start=1):
                     staged_point = JointTrajectoryPoint()
                     staged_point.positions = target
-                    stage_time = stage * self._initial_pose_duration
+                    stage_time = stage * stage_duration
                     staged_point.time_from_start.sec = int(stage_time)
                     staged_point.time_from_start.nanosec = int(
                         (stage_time - int(stage_time)) * 1.0e9)
                     trajectory.points.append(staged_point)
-                duration *= len(staged_targets)
             else:
                 trajectory.points.append(point)
         else:

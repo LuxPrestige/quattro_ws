@@ -16,8 +16,10 @@ either controller_manager or bringup_manager exits, the whole launch goes
 down.
 
 Reaching the end of this launch file does not mean the robot is ready; the
-bringup manager's own READY log line does. Gait is off unless use_gait is
-set: bringup leaves the robot holding position.
+bringup manager's own READY log line does. Gait runs only when use_gait is
+set; without it bringup leaves the robot holding position. With it, the gait
+controller starts in stepping mode and moves to the initial pose by itself as
+soon as READY latches -- no joystick input needed.
 """
 
 from launch import LaunchDescription
@@ -27,7 +29,7 @@ from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
 )
-from launch.conditions import IfCondition
+from launch.conditions import evaluate_condition_expression, IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import (
@@ -51,6 +53,11 @@ def launch_setup(context, *args, **kwargs):
     initial_pose_duration = LaunchConfiguration('initial_pose_duration')
     calibration_file = LaunchConfiguration('calibration_file')
     controller_file = LaunchConfiguration('controller_file')
+    # Resolved here so the bringup manager's READY banner can tell the truth
+    # about whether the robot is about to move.
+    gait_autostart = (
+        evaluate_condition_expression(context, [use_gait]) and
+        evaluate_condition_expression(context, [start_gait_enabled]))
 
     description_share = FindPackageShare('quattro_description')
     xacro_file = PathJoinSubstitution([
@@ -97,7 +104,10 @@ def launch_setup(context, *args, **kwargs):
         executable='bringup_manager',
         name='bringup_manager',
         output='screen',
-        parameters=[{'use_sim_time': False}],
+        parameters=[{
+            'use_sim_time': False,
+            'gait_autostart': gait_autostart,
+        }],
     )
     # Started only when explicitly asked for (use_gait). It starts with
     # everything else, but wait_for_bringup_ready keeps it silent until
@@ -204,21 +214,27 @@ def generate_launch_description() -> LaunchDescription:
             'use_gait', default_value='false',
             description=(
                 'Start the gait controller process. Hardware bringup does '
-                'not need it: READY means the robot holds position.')),
+                'not need it: without it READY means the robot holds '
+                'position.')),
         DeclareLaunchArgument(
             'initial_pose_duration', default_value='5.0',
-            description='Seconds used for the initial IK trajectory.'),
-        DeclareLaunchArgument(
-            'start_gait_enabled', default_value='false',
             description=(
-                'Immediately command the initial gait pose once bringup '
-                'reports ready. Requires use_gait:=true. Keep false for '
-                'hardware bringup and gain tests.')),
+                'Total seconds for the initial IK trajectory, shared by '
+                'every stage of a staged transition.')),
+        DeclareLaunchArgument(
+            'start_gait_enabled', default_value='true',
+            description=(
+                'Start the gait controller in stepping mode and command the '
+                'initial pose as soon as bringup reports ready, without any '
+                'joystick input. Only has an effect with use_gait:=true; set '
+                'it false to bring gait up idle and wait for '
+                '/gait/enable.')),
         DeclareLaunchArgument(
             'staged_initial_pose', default_value='true',
             description=(
-                'Move one three-joint leg at a time during the initial pose '
-                'transition. Recommended for real hardware.')),
+                'Move the four hip joints together first, then the remaining '
+                'eight joints, during the initial pose transition. '
+                'Recommended for real hardware.')),
         DeclareLaunchArgument(
             'use_imu', default_value='true',
             description='Start the BNO085 IMU node.'),

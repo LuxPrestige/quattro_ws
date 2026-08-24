@@ -132,13 +132,13 @@ startup 순서는 `bringup_manager`가 소유한다. `OnProcessExit` chain으로
 | `calibration_file` | `config/calibration.yaml` | 기체별 calibration YAML |
 | `controller_file` | `config/hardware_controllers.yaml` | controller 설정 |
 | `use_gait` | `false` | gait controller 프로세스 시작 여부 |
-| `start_gait_enabled` | `false` | READY 직후 즉시 initial pose 명령 (`use_gait:=true` 필요) |
-| `staged_initial_pose` | `true` | initial pose를 다리 단위로 순차 이동 |
-| `initial_pose_duration` | `5.0` | initial pose 궤적 시간(초) |
+| `start_gait_enabled` | `true` | READY 직후 조이스틱 조작 없이 stepping 모드로 initial pose 이동 (`use_gait:=true` 필요) |
+| `staged_initial_pose` | `true` | initial pose를 hip 4개 → 나머지 8개 2단계로 이동 |
+| `initial_pose_duration` | `5.0` | initial pose 전체 이동 시간(초, 모든 단계 합) |
 | `use_imu` | `true` | BNO085 노드 시작 |
 | `use_teleop` | `true` | joystick/teleop 시작 |
 
-hardware bringup에는 gait가 필요 없으므로 `use_gait`의 기본값은 `false`다.
+hardware bringup에는 gait가 필요 없으므로 `use_gait`의 기본값은 `false`다. `use_gait:=true`로 gait를 띄우면 `start_gait_enabled` 기본값이 `true`이므로 READY와 동시에 stepping 모드로 initial pose로 이동한다. gait 프로세스만 띄우고 `/gait/enable` 호출을 기다리려면 `start_gait_enabled:=false`를 준다. 이때 `bringup_manager`는 launch가 넘긴 `gait_autostart` 파라미터로 READY 배너의 `Gait` 줄을 `OFF`/`STEPPING`으로 맞춘다.
 
 ## `bringup_manager.py`
 
