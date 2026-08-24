@@ -1,7 +1,7 @@
 position_control:
-  current_limit: 20.0
-  position_gain: 60.0
-  velocity_gain: 0.09
+  current_limit: 40.0
+  position_gain: 61.0
+  velocity_gain: 0.08
   velocity_integrator_gain: 0.32
 joints:
   front_left_hip_joint: {can_interface: can0, can_id: 0, direction: -1, offset: 0}

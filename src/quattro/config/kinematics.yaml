@@ -23,7 +23,7 @@ gait_controller:
     nominal_height: 0.300
     center_of_mass_offset_x: 0.040
     swing_duration: 0.45
-    stance_duration: 0.55
+    stance_duration: 0.45
     clearance_height: 0.070
     penetration_depth: 0.0
     max_linear_speed: 0.5
