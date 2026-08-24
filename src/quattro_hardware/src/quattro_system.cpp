@@ -111,7 +111,7 @@ bool parse_ms_param(
 // one-time startup burst, not the real-time write() hot path, so a bounded
 // retry-with-backoff here is safe and lets the queue drain instead of
 // failing configure outright.
-template <typename SendFn>
+template<typename SendFn>
 bool send_with_retry(SendFn && send_fn)
 {
   constexpr int kMaxAttempts = 20;
@@ -168,7 +168,8 @@ bool QuattroSystem::parse_hardware_parameters()
   ok = parse_int_param(params, "encoder_sync_frames", encoder_sync_frames_, logger) && ok;
   ok = parse_ms_param(params, "command_timeout_ms", command_timeout_, logger) && ok;
   ok = parse_ms_param(params, "scheduling_warning_ms", scheduling_warning_, logger) && ok;
-  ok = parse_double_param(params, "rotor_velocity_limit_rev_s", rotor_velocity_limit_rev_s_, logger) &&
+  ok = parse_double_param(params, "rotor_velocity_limit_rev_s", rotor_velocity_limit_rev_s_,
+      logger) &&
     ok;
   ok = parse_ms_param(params, "telemetry_period_ms", telemetry_period_, logger) && ok;
 
@@ -295,7 +296,7 @@ bool QuattroSystem::validate_interfaces() const
     for (const auto & wanted : expected_command) {
       const bool found = std::any_of(
         joint_info.command_interfaces.begin(), joint_info.command_interfaces.end(),
-        [&wanted](const auto & interface_info) { return interface_info.name == wanted; });
+        [&wanted](const auto & interface_info) {return interface_info.name == wanted;});
       if (!found) {
         RCLCPP_ERROR(
           logger, "Joint '%s' is missing required command interface '%s'",
@@ -314,7 +315,7 @@ bool QuattroSystem::validate_interfaces() const
     for (const auto & wanted : expected_state) {
       const bool found = std::any_of(
         joint_info.state_interfaces.begin(), joint_info.state_interfaces.end(),
-        [&wanted](const auto & interface_info) { return interface_info.name == wanted; });
+        [&wanted](const auto & interface_info) {return interface_info.name == wanted;});
       if (!found) {
         RCLCPP_ERROR(
           logger, "Joint '%s' is missing required state interface '%s'", joint_info.name.c_str(),
@@ -385,7 +386,7 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
     // then gains, then the controller mode, and only later (in
     // on_activate) closed-loop control.
     const bool limits_ok = send_with_retry([&] {
-        return motor_manager_->send_set_limits(
+          return motor_manager_->send_set_limits(
           joint.node_id, static_cast<float>(rotor_velocity_limit_rev_s_),
           static_cast<float>(current_limit_));
       });
@@ -395,10 +396,11 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
     }
     const bool gains_ok =
       send_with_retry([&] {
-        return motor_manager_->send_set_pos_gain(joint.node_id, static_cast<float>(position_gain_));
+          return motor_manager_->send_set_pos_gain(joint.node_id,
+          static_cast<float>(position_gain_));
       }) &&
       send_with_retry([&] {
-        return motor_manager_->send_set_vel_gains(
+          return motor_manager_->send_set_vel_gains(
           joint.node_id, static_cast<float>(velocity_gain_),
           static_cast<float>(velocity_integrator_gain_));
       });
@@ -411,7 +413,7 @@ hardware_interface::CallbackReturn QuattroSystem::on_configure(const rclcpp_life
     // hold the axis at its current position, which is why on_activate needs
     // no Set_Input_Pos of its own.
     const bool mode_ok = send_with_retry([&] {
-        return motor_manager_->send_set_controller_mode(
+          return motor_manager_->send_set_controller_mode(
           joint.node_id, gim6010_driver::ControlMode::kPositionControl,
           gim6010_driver::InputMode::kPosFilter);
       });
@@ -454,12 +456,12 @@ namespace
 // kPollInterval and re-test, until `predicate` holds or `timeout` elapses.
 // Polling drains *all* buses, so waiting on one motor keeps every other
 // motor's cached state and freshness timestamps current at the same time.
-template <typename Predicate>
+template<typename Predicate>
 bool poll_until(
   gim6010_driver::MotorManager & manager, std::chrono::milliseconds timeout, Predicate predicate)
 {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  for (;;) {
+  for (;; ) {
     manager.poll();
     if (predicate()) {
       return true;
@@ -476,10 +478,11 @@ bool poll_until(
 bool QuattroSystem::wait_for_all_heartbeats(std::chrono::milliseconds timeout)
 {
   return poll_until(*motor_manager_, timeout, [this] {
-      const auto now = std::chrono::steady_clock::now();
-      return std::all_of(joints_.begin(), joints_.end(), [&](const JointContext & joint) {
-          const auto * motor = motor_manager_->motor(joint.node_id);
-          return motor != nullptr && motor->has_fresh_heartbeat(heartbeat_timeout_, now);
+             const auto now = std::chrono::steady_clock::now();
+             return std::all_of(joints_.begin(), joints_.end(), [&](const JointContext & joint) {
+                      const auto * motor = motor_manager_->motor(joint.node_id);
+                      return motor != nullptr && motor->has_fresh_heartbeat(heartbeat_timeout_,
+          now);
         });
     });
 }
@@ -487,11 +490,12 @@ bool QuattroSystem::wait_for_all_heartbeats(std::chrono::milliseconds timeout)
 bool QuattroSystem::wait_for_all_fresh_feedback(std::chrono::milliseconds timeout)
 {
   return poll_until(*motor_manager_, timeout, [this] {
-      const auto now = std::chrono::steady_clock::now();
-      return std::all_of(joints_.begin(), joints_.end(), [&](const JointContext & joint) {
-          const auto * motor = motor_manager_->motor(joint.node_id);
-          return motor != nullptr && motor->has_fresh_heartbeat(heartbeat_timeout_, now) &&
-                 motor->has_fresh_feedback(feedback_timeout_, now);
+             const auto now = std::chrono::steady_clock::now();
+             return std::all_of(joints_.begin(), joints_.end(), [&](const JointContext & joint) {
+                      const auto * motor = motor_manager_->motor(joint.node_id);
+                      return motor != nullptr && motor->has_fresh_heartbeat(heartbeat_timeout_,
+          now) &&
+                             motor->has_fresh_feedback(feedback_timeout_, now);
         });
     });
 }
@@ -532,16 +536,16 @@ bool QuattroSystem::wait_for_closed_loop(const JointContext & joint)
 
   bool faulted = false;
   const bool reached = poll_until(*motor_manager_, closed_loop_timeout_, [&] {
-      const auto now = std::chrono::steady_clock::now();
-      if (!motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
-        return false;
-      }
-      const auto heartbeat = motor->last_heartbeat();
-      if (heartbeat->axis_error != 0) {
-        faulted = true;
-        return true;
-      }
-      return heartbeat->axis_state == gim6010_driver::AxisState::kClosedLoopControl;
+        const auto now = std::chrono::steady_clock::now();
+        if (!motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
+          return false;
+        }
+        const auto heartbeat = motor->last_heartbeat();
+        if (heartbeat->axis_error != 0) {
+          faulted = true;
+          return true;
+        }
+        return heartbeat->axis_state == gim6010_driver::AxisState::kClosedLoopControl;
     });
 
   if (faulted) {
@@ -571,7 +575,7 @@ bool QuattroSystem::wait_for_post_closed_loop_encoder(
   const std::uint64_t required =
     baseline_sequence + static_cast<std::uint64_t>(encoder_sync_frames_);
   const bool synced = poll_until(*motor_manager_, encoder_sync_timeout_, [&] {
-      return motor->encoder_sequence() >= required;
+        return motor->encoder_sequence() >= required;
     });
   if (!synced) {
     RCLCPP_ERROR(
@@ -816,7 +820,8 @@ hardware_interface::return_type QuattroSystem::write(const rclcpp::Time &, const
   bool faulted = false;
   for (size_t i = 0; i < joints_.size(); ++i) {
     const auto & joint = joints_[i];
-    const double joint_rad = get_command<double>(joint.name + "/" + hardware_interface::HW_IF_POSITION);
+    const double joint_rad = get_command<double>(joint.name + "/" +
+        hardware_interface::HW_IF_POSITION);
     gim6010_driver::SetInputPosCommand command;
     command.position_rev =
       static_cast<float>(joint_rad_to_motor_rev(joint_rad, joint.calibration));

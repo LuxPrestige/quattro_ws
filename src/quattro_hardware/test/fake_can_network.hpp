@@ -67,21 +67,21 @@ public:
     uint32_t axis_error_on_enable{0};
   };
 
-  void add_motor(uint8_t node_id, MotorSim motor) { motors_.emplace(node_id, std::move(motor)); }
+  void add_motor(uint8_t node_id, MotorSim motor) {motors_.emplace(node_id, std::move(motor));}
 
-  MotorSim & motor(uint8_t node_id) { return motors_.at(node_id); }
+  MotorSim & motor(uint8_t node_id) {return motors_.at(node_id);}
 
   // Every frame this network has been asked to transmit, in order.
-  const std::vector<gim6010_driver::CanFrame> & sent_frames() const { return sent_frames_; }
+  const std::vector<gim6010_driver::CanFrame> & sent_frames() const {return sent_frames_;}
 
   std::size_t count_sent(uint8_t node_id, gim6010_driver::CommandId command) const
   {
     return static_cast<std::size_t>(std::count_if(
       sent_frames_.begin(), sent_frames_.end(),
-      [node_id, command](const gim6010_driver::CanFrame & frame) {
-        return gim6010_driver::node_id_from_arbitration_id(frame.id) == node_id &&
-               gim6010_driver::cmd_id_from_arbitration_id(frame.id) ==
-                 static_cast<uint8_t>(command);
+             [node_id, command](const gim6010_driver::CanFrame & frame) {
+               return gim6010_driver::node_id_from_arbitration_id(frame.id) == node_id &&
+                      gim6010_driver::cmd_id_from_arbitration_id(frame.id) ==
+                      static_cast<uint8_t>(command);
       }));
   }
 
@@ -89,9 +89,9 @@ public:
   {
     return static_cast<std::size_t>(std::count_if(
       sent_frames_.begin(), sent_frames_.end(),
-      [command](const gim6010_driver::CanFrame & frame) {
-        return gim6010_driver::cmd_id_from_arbitration_id(frame.id) ==
-               static_cast<uint8_t>(command);
+             [command](const gim6010_driver::CanFrame & frame) {
+               return gim6010_driver::cmd_id_from_arbitration_id(frame.id) ==
+                      static_cast<uint8_t>(command);
       }));
   }
 
@@ -116,7 +116,7 @@ public:
     for (std::size_t i = 0; i < sent_frames_.size(); ++i) {
       if (gim6010_driver::node_id_from_arbitration_id(sent_frames_[i].id) == node_id &&
         gim6010_driver::cmd_id_from_arbitration_id(sent_frames_[i].id) ==
-          static_cast<uint8_t>(command))
+        static_cast<uint8_t>(command))
       {
         return i;
       }
@@ -124,7 +124,7 @@ public:
     return sent_frames_.size();
   }
 
-  void clear_sent() { sent_frames_.clear(); }
+  void clear_sent() {sent_frames_.clear();}
 
   std::unique_ptr<gim6010_driver::CanSocketInterface> make_socket(const std::string & bus);
 
@@ -151,8 +151,8 @@ public:
     open_ = true;
     return true;
   }
-  void close() override { open_ = false; }
-  bool is_open() const noexcept override { return open_; }
+  void close() override {open_ = false;}
+  bool is_open() const noexcept override {return open_;}
 
   bool send(const gim6010_driver::CanFrame & frame) override
   {
@@ -193,7 +193,7 @@ public:
   {
     return gim6010_driver::CanBusState::kActive;
   }
-  const std::string & interface_name() const noexcept override { return bus_; }
+  const std::string & interface_name() const noexcept override {return bus_;}
 
 private:
   FakeCanNetwork & network_;

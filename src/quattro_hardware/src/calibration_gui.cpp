@@ -155,9 +155,9 @@ bool gains_valid(
   double velocity_integrator_gain)
 {
   return std::isfinite(current_limit) && std::isfinite(position_gain) &&
-    std::isfinite(velocity_gain) && std::isfinite(velocity_integrator_gain) &&
-    current_limit > 0.0 && position_gain >= 0.0 && velocity_gain >= 0.0 &&
-    velocity_integrator_gain >= 0.0;
+         std::isfinite(velocity_gain) && std::isfinite(velocity_integrator_gain) &&
+         current_limit > 0.0 && position_gain >= 0.0 && velocity_gain >= 0.0 &&
+         velocity_integrator_gain >= 0.0;
 }
 
 CalibrationData load_calibration(const std::string & path)
@@ -633,7 +633,8 @@ private:
     motor_manager_->send_set_controller_mode(
       joint.can_id, gim6010_driver::ControlMode::kPositionControl,
       gim6010_driver::InputMode::kPosFilter);
-    motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kClosedLoopControl);
+    motor_manager_->send_set_axis_state(joint.can_id,
+      gim6010_driver::AxisState::kClosedLoopControl);
 
     if (!wait_for_closed_loop(index)) {
       motor_manager_->send_set_axis_state(joint.can_id, gim6010_driver::AxisState::kIdle);

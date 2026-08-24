@@ -92,7 +92,8 @@ TEST(JointTransform, MitVelocityAndTorqueRoundTrip)
     mit_output_rad_s_to_joint_rad_s(joint_rad_s_to_mit_output_rad_s(2.0, calibration), calibration),
     2.0, 1e-12);
   EXPECT_NEAR(
-    mit_output_Nm_to_joint_Nm(joint_Nm_to_mit_output_Nm(4.0, calibration), calibration), 4.0, 1e-12);
+    mit_output_Nm_to_joint_Nm(joint_Nm_to_mit_output_Nm(4.0, calibration), calibration), 4.0,
+        1e-12);
 }
 
 }  // namespace

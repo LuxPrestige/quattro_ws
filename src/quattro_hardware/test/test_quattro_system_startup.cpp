@@ -54,7 +54,7 @@ protected:
     FakeCanNetwork * network = &network_;
     return std::make_unique<gim6010_driver::MotorManager>(
       buses, routes,
-      [network](const std::string & bus) { return network->make_socket(bus); });
+      [network](const std::string & bus) {return network->make_socket(bus);});
   }
 
 private:
@@ -394,7 +394,7 @@ TEST_F(QuattroSystemStartup, FirstCommandContinuesFromSynchronizedPosition)
   // Activation must leave command == state. Otherwise the first write()
   // would command the interface's default 0.0 rad and the joint would snap
   // there the moment the controller takes over.
-  for (const std::string & joint : {"joint_0", "joint_1"}) {
+  for (const std::string joint : {"joint_0", "joint_1"}) {
     const double commanded =
       system->get_command<double>(joint + "/" + hardware_interface::HW_IF_POSITION);
     EXPECT_NEAR(commanded, state_position(*system, joint), 1e-9) << joint;
