@@ -221,7 +221,7 @@ startup / Closed Loop 진입
 
 ## 10. Calibration / tuning GUI
 
-`calibration_gui`와 `position_control_tuning_gui`도 runtime과 동일한 activation 원칙을 따른다.
+`calibration_gui` 하나가 offset 캘리브레이션과 position control 게인 튜닝을 모두 담당한다(과거의 별도 `position_control_tuning_gui`는 삭제했다). runtime과 동일한 activation 원칙을 따른다.
 
 Enable 동작:
 
@@ -236,11 +236,15 @@ Set_Limits
 → session current position 설정
 ```
 
-Enable 순간에는 `Set_Input_Pos`를 보내지 않는다. 첫 position command는 `+/- jog`, `Move to Saved Zero`(calibration GUI), `Send Relative Target`(tuning GUI) 등 사용자가 실제 이동을 요청했을 때 전송한다.
+Enable 순간에는 `Set_Input_Pos`를 보내지 않는다. 첫 position command는 `+/- jog`, `Go to Target`(절대 목표각), `Move to Saved Zero` 등 사용자가 실제 이동을 요청했을 때 전송한다.
 
-두 GUI 모두 "사용자가 target을 요청했는가"를 별도로 기록하고, 주기 timer는 그 플래그가 설정된 축에만 명령을 반복 전송한다. Enable만 된 축은 모터 자체 Hold 상태로 둔다.
+축마다 "사용자가 target을 요청했는가"를 별도로 기록하고, 주기 timer는 그 플래그가 설정된 축에만 명령을 반복 전송한다. Enable만 된 축은 모터 자체 Hold 상태로 둔다.
 
-`Save Current Position as Zero`는 화면에 남은 값이나 Closed Loop 이전 cache가 아니라, 해당 축의 Closed Loop 동기화 시점 이후에 도착한 encoder frame을 다시 읽어 사용한다.
+`Save Current Position as Zero`는 화면에 남은 값이나 Closed Loop 이전 cache가 아니라, 해당 축의 Closed Loop 동기화 시점 이후에 도착한 encoder frame을 다시 읽어 사용한다. 저장 후에도 해당 축은 Enable 상태를 유지한다(명시적으로 Disable해야 Idle된다).
+
+position control 게인(`current_limit`/`position_gain`/`velocity_gain`/`velocity_integrator_gain`)은 축별이 아니라 `position_control` 키 하나로 전역 적용된다. `Apply to Enabled Motors`는 입력값을 즉시 활성 축 전체에 재전송하고(순서는 `Set_Limits → Set_Pos_Gain → Set_Vel_Gains`, hold target은 유지), `Save Gains to YAML`은 파일에 기록만 한다.
+
+GUI는 12축을 항상 표로 보여준다(축 상태/fault, saved·session·target 각도, 추종 오차, 속도, raw motor rev, offset). `Absolute target`은 saved(ROS joint) 좌표계이며 URDF `<limit>` 범위를 벗어나면 거부된다. jog는 캘리브레이션 도중 offset이 아직 부정확한 경우가 많아 이 한계를 적용하지 않는다.
 
 ## 11. 테스트
 

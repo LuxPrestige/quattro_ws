@@ -79,6 +79,8 @@ Closed Loop가 Heartbeat로 확인된 뒤 도착한 새 EncoderEstimate를 최�
   - enable된 모든 축에 매 tick hold command 전송
 - `direct_position_tuning_gui.cpp`
   - 파일/실행파일/클래스 이름과 activation sequence 전체
+- `position_control_tuning_gui.cpp`
+  - 별도 실행파일 자체를 삭제. 게인 편집/저장 기능은 `calibration_gui`에 통합했다 (2026-08-24)
 - `quattro_bringup`
   - `OnProcessExit` chain 중심 startup orchestration
   - `hardware_spawner` + spawner chain
@@ -119,9 +121,11 @@ helper: `wait_for_all_heartbeats()`, `wait_for_all_fresh_feedback()`, `check_pre
 
 ### GUI
 
-`calibration_gui`, `position_control_tuning_gui` 모두 Enable 시 command 없이 Closed Loop 자체 Hold를 사용한다.
+`calibration_gui` 하나로 offset 캘리브레이션과 position control 게인 튜닝을 모두 수행한다(별도 `position_control_tuning_gui` 실행파일은 삭제). Enable 시 command 없이 Closed Loop 자체 Hold를 사용하는 원칙은 그대로다.
 
-첫 `Set_Input_Pos`는 사용자가 Jog / Move to Saved Zero / Send Relative Target을 요청했을 때만 전송한다. 축별 "target 요청됨" 플래그로 주기 전송을 제어한다.
+첫 `Set_Input_Pos`는 사용자가 Jog / Go to Target(절대 목표각) / Move to Saved Zero를 요청했을 때만 전송한다. 축별 "target 요청됨" 플래그로 주기 전송을 제어한다.
+
+12축 상태(축 상태/fault, saved/session/target 각도, 추종 오차, 속도, raw motor rev, offset)를 표로 항상 표시한다. 게인은 `position_control` 키 하나로 전역 적용되며, `Apply to Enabled Motors`로 즉시 반영, `Save Gains to YAML`로 파일에 저장한다.
 
 ### `quattro_bringup`
 

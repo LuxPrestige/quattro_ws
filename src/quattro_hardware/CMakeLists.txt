@@ -27,7 +27,9 @@ pluginlib_export_plugin_description_file(hardware_interface quattro_hardware.xml
 
 # calibration_gui: standalone Qt tool, deliberately independent of
 # ros2_control/controller_manager (docs/packages/quattro_hardware.md
-# section 5) -- it talks to gim6010_driver directly.
+# section 5) -- it talks to gim6010_driver directly. Covers both offset
+# calibration and position-control gain tuning (formerly a separate
+# position_control_tuning_gui binary).
 find_package(Qt5 COMPONENTS Widgets QUIET)
 find_package(yaml-cpp QUIET)
 if(Qt5_FOUND AND yaml-cpp_FOUND)
@@ -40,17 +42,9 @@ if(Qt5_FOUND AND yaml-cpp_FOUND)
     Qt5::Widgets
     yaml-cpp::yaml-cpp)
   install(TARGETS calibration_gui DESTINATION lib/${PROJECT_NAME})
-  add_executable(position_control_tuning_gui src/position_control_tuning_gui.cpp)
-  target_compile_features(position_control_tuning_gui PUBLIC cxx_std_17)
-  target_link_libraries(position_control_tuning_gui
-    quattro_hardware
-    gim6010_driver::gim6010_driver
-    Qt5::Widgets
-    yaml-cpp::yaml-cpp)
-  install(TARGETS position_control_tuning_gui DESTINATION lib/${PROJECT_NAME})
 else()
   message(WARNING
-    "Qt5 Widgets and/or yaml-cpp not found -- skipping hardware GUI tools. "
+    "Qt5 Widgets and/or yaml-cpp not found -- skipping the hardware GUI tool. "
     "Install qtbase5-dev and libyaml-cpp-dev to build it.")
 endif()
 

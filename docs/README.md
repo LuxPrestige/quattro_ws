@@ -97,7 +97,8 @@ ip -details -statistics link show can1
 
 ```bash
 ros2 run quattro_hardware calibration_gui --calibration-file <path>
-ros2 run quattro_hardware position_control_tuning_gui --calibration-file <path>
 ```
 
-두 GUI와 `hardware.launch.py`는 같은 SocketCAN 인터페이스를 소유하므로 동시에 실행하지 않는다.
+offset 캘리브레이션과 position control 게인 튜닝을 하나의 GUI에서 수행한다 (12축 상태를 표로 동시에 표시). 자세한 사용법은 `docs/calibration.md` 참고.
+
+이 GUI와 `hardware.launch.py`는 같은 SocketCAN 인터페이스를 소유하므로 동시에 실행하지 않는다.
