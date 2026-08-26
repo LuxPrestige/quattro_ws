@@ -10,6 +10,20 @@
 
 실기 시험은 아직 수행하지 않았다. 검증은 빌드, 자동 테스트, URDF 파싱, mock hardware 기반 bringup까지다.
 
+## 관절 한계/액추에이터 사양 갱신 (2026-08-26)
+
+제조사 전기적 특성 자료(모델 `6010-8`)를 반영해 `quattro.urdf`/`quattro.urdf.xacro`의 12관절 `<limit>`을 갱신했다.
+
+```text
+hip   : -45~45 deg   (-0.7853981634~0.7853981634 rad)
+upper : -90~140 deg  (-1.5707963268~2.4434609528 rad)
+lower : -135~135 deg (-2.3561944902~2.3561944902 rad)
+```
+
+`effort`(11.0 N·m, 정지 토크), `velocity`(12.5663706144 rad/s, 정격 회전수 120 rpm 기준), `dynamics friction`(0.188 N·m, 무부하 전류 × 토크 상수)도 함께 갱신했다. `dynamics damping`은 제조사 자료에 근거가 없어 0.0을 유지한다. 값과 근거는 `docs/packages/quattro_description.md`에 정리했다.
+
+같은 값을 사용해야 하는 `ros2_control` `command_interface`(`quattro_hardware_joint`/`quattro_simulation_joint` 매크로 호출부의 `min`/`max`)도 함께 갱신했다 — 실제 command 경로가 참조하는 값은 `<joint><limit>`이 아니라 이 `min`/`max`이므로, 둘 중 하나만 바꾸면 실제로는 예전 한계가 그대로 적용된다.
+
 ### 폐기된 전제
 
 기존 Quattro 하드웨어 코드는 `Direct Position + Closed Loop 전 encoder 읽기 + Set_Input_Pos(current)`를 Safe Start로 사용했다.
@@ -200,4 +214,4 @@ Robot                    HOLD / READY
 - `docs/development_status.md`: 날짜별 실험 결과와 전환 이력 기록
 - `AGENTS.md`: 반드시 지켜야 할 짧은 하드웨어 계약만 기록
 
-세부 구현 목표는 `docs/packages/quattro_hardware.md`, `docs/packages/quattro_bringup.md`, `docs/calibration.md`를 따른다.
+세부 구현 목표는 `docs/packages/quattro_hardware.md`(calibration/tuning GUI 포함), `docs/packages/quattro_bringup.md`를 따른다.

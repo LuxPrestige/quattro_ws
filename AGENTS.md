@@ -104,7 +104,7 @@ Closed Loop 이전 EncoderEstimate가 startup 위치로 사용되거나, startup
 - GIM6010 드라이버: `docs/packages/gim6010_driver.md`
 - ros2_control 하드웨어: `docs/packages/quattro_hardware.md`
 - 실기 bringup: `docs/packages/quattro_bringup.md`
-- 캘리브레이션: `docs/calibration.md`
+- 캘리브레이션: `docs/packages/quattro_hardware.md` 10절
 - 현재 구현/실기 상태: `docs/development_status.md`
 - 제조사 매뉴얼: `docs/GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf`
 

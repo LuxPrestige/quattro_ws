@@ -227,13 +227,13 @@ READY는 걷는 상태가 아니다.
 
 ## Position Control 설정 파일
 
-설정 키는 `position_control`이다.
+설정 키는 `position_control`이다. 아래 값은 버전관리되는 `calibration.yaml.example` 기준이다.
 
 ```yaml
 position_control:
-  current_limit: 10.0
+  current_limit: 5.0
   position_gain: 20.0
-  velocity_gain: 0.11
+  velocity_gain: 0.16
   velocity_integrator_gain: 0.32
 ```
 
@@ -277,7 +277,6 @@ ip -details -statistics link show can1
 
 ## 관련 문서
 
-- `docs/packages/quattro_hardware.md`
+- `docs/packages/quattro_hardware.md` (calibration/tuning GUI 포함)
 - `docs/packages/gim6010_driver.md`
-- `docs/calibration.md`
 - `docs/development_status.md`

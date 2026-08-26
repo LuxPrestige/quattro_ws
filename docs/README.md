@@ -11,7 +11,6 @@
 | [`packages/gim6010_driver.md`](packages/gim6010_driver.md) | CAN Simple / SocketCAN 저수준 계약 |
 | [`packages/quattro_hardware.md`](packages/quattro_hardware.md) | `QuattroSystem` lifecycle, Position + PosFilter startup |
 | [`packages/quattro_bringup.md`](packages/quattro_bringup.md) | 실제 robot bringup 순서, `bringup_manager` 상태 머신 |
-| [`calibration.md`](calibration.md) | 관절 영점 캘리브레이션 |
 
 ## 현재 실기 제어 원칙
 
@@ -51,7 +50,7 @@ Set_Limits
 ## 실행 환경
 
 - Docker/X11/GPU/Git: [`development_environment.md`](development_environment.md)
-- Gazebo: [`gazebo.md`](gazebo.md)
+- Gazebo: [`packages/quattro_gazebo.md`](packages/quattro_gazebo.md)
 - 제조사 매뉴얼: `GIM6010-8 메뉴얼_한국어(번역)_rev2.2.pdf`
 
 ## 실기 bringup
@@ -99,6 +98,6 @@ ip -details -statistics link show can1
 ros2 run quattro_hardware calibration_gui --calibration-file <path>
 ```
 
-offset 캘리브레이션과 position control 게인 튜닝을 하나의 GUI에서 수행한다 (12축 상태를 표로 동시에 표시). 자세한 사용법은 `docs/calibration.md` 참고.
+offset 캘리브레이션과 position control 게인 튜닝을 하나의 GUI에서 수행한다 (12축 상태를 표로 동시에 표시). 자세한 사용법은 `docs/packages/quattro_hardware.md` 10절 참고.
 
 이 GUI와 `hardware.launch.py`는 같은 SocketCAN 인터페이스를 소유하므로 동시에 실행하지 않는다.
