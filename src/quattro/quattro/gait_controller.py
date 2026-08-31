@@ -2,6 +2,7 @@
 
 import math
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped, Twist
 from quattro.gait import GaitGenerator, GaitParameters
 from quattro.kinematics import (
@@ -16,7 +17,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, qos_profile_sensor_data, QoSProfile
 from sensor_msgs.msg import Imu, JointState
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -111,7 +112,6 @@ class GaitController(Node):
         self._joint_positions: dict[str, float] = {}
         self._balance_enabled = False
         self._estop = False
-        self._gait_values = gait_values
         self._contacts = {
             name: False for name in self._kinematics.nominal_foot_positions}
         self._last_command_time = self.get_clock().now()
@@ -127,18 +127,6 @@ class GaitController(Node):
             Imu, 'imu/data', self._on_imu, qos_profile_sensor_data)
         self.create_subscription(Bool, 'estop', self._on_estop, 10)
         self.create_subscription(Bool, 'imu_auto', self._on_imu_auto, 10)
-        self.create_subscription(
-            Float64, 'gait/clearance_height',
-            lambda message: self._set_gait_value(
-                'clearance_height', message.data), 10)
-        self.create_subscription(
-            Float64, 'gait/penetration_depth',
-            lambda message: self._set_gait_value(
-                'penetration_depth', message.data), 10)
-        self.create_subscription(
-            Float64, 'gait/swing_duration',
-            lambda message: self._set_gait_value(
-                'swing_duration', message.data), 10)
         self.create_service(SetBool, 'gait/enable', self._set_gait_enabled)
         self.create_service(SetBool, 'balance/enable', self._set_balance_enabled)
         self._contact_subscriptions = [
@@ -213,22 +201,6 @@ class GaitController(Node):
 
     def _on_imu_auto(self, message: Bool) -> None:
         self._balance_enabled = message.data
-
-    def _set_gait_value(self, name: str, value: float) -> None:
-        values = dict(self._gait_values)
-        values[name] = float(value)
-        if name == 'swing_duration':
-            values['stance_duration'] = min(
-                values['stance_duration'], 1.3 * values[name])
-        try:
-            parameters = GaitParameters(**values)
-        except ValueError as error:
-            self.get_logger().error(f'Rejected gait adjustment: {error}')
-            return
-        phase = self._gait.phase
-        self._gait_values = values
-        self._gait = GaitGenerator(self._kinematics.geometry, parameters)
-        self._gait.reset(phase)
 
     def _set_gait_enabled(self, request, response):
         output_was_disabled = not self._output_enabled
@@ -325,7 +297,7 @@ class GaitController(Node):
             return
 
         trajectory = JointTrajectory()
-        trajectory.header.stamp = now.to_msg()
+        trajectory.header.stamp = Time()  # zero stamp = start immediately
         trajectory.joint_names = list(self._kinematics.joint_names)
         duration = (self._initial_pose_duration if self._initial_pose_pending
                     else 1.0 / self._control_frequency)

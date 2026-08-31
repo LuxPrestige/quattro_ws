@@ -2,6 +2,7 @@
 
 import math
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 from quattro.kinematics import (
     QuadrupedKinematics,
@@ -59,7 +60,7 @@ class PoseController(Node):
             return
 
         trajectory = JointTrajectory()
-        trajectory.header.stamp = self.get_clock().now().to_msg()
+        trajectory.header.stamp = Time()  # zero stamp = start immediately
         trajectory.joint_names = list(self._model.joint_names)
         point = JointTrajectoryPoint()
         point.positions = positions.reshape(-1).tolist()

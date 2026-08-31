@@ -8,7 +8,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 
 
@@ -36,8 +36,6 @@ class TeleopNode(Node):
             'axis_linear_y': 0,
             'axis_height': 3,
             'axis_yaw': 2,
-            'axis_dpad_vertical': 7,
-            'axis_dpad_horizontal': 6,
             'scale_linear_x': 0.30,
             'scale_linear_y': 0.30,
             'scale_yaw': 1.0,
@@ -46,16 +44,10 @@ class TeleopNode(Node):
             'button_switch_mode': 0,
             'button_estop': 1,
             'button_imu_auto': 3,
-            'button_left_bumper': 4,
-            'button_right_bumper': 5,
             'deadzone': 0.10,
             'joy_timeout_sec': 0.5,
             'publish_rate_hz': 20.0,
-            'clearance_height': 0.040,
-            'penetration_depth': 0.008,
             'start_stepping': True,
-            'swing_duration': 0.25,
-            'adjustment_step': 0.001,
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value)
@@ -76,21 +68,12 @@ class TeleopNode(Node):
         self._imu_auto = False
         self._twist = Twist()
         self._pose = PoseStamped()
-        self._clearance = float(self._parameters['clearance_height'])
-        self._penetration = float(self._parameters['penetration_depth'])
-        self._swing_duration = float(self._parameters['swing_duration'])
 
         self._cmd_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self._pose_publisher = self.create_publisher(
             PoseStamped, '/body_pose', 10)
         self._estop_publisher = self.create_publisher(Bool, '/estop', 10)
         self._imu_publisher = self.create_publisher(Bool, '/imu_auto', 10)
-        self._clearance_publisher = self.create_publisher(
-            Float64, '/gait/clearance_height', 10)
-        self._penetration_publisher = self.create_publisher(
-            Float64, '/gait/penetration_depth', 10)
-        self._swing_publisher = self.create_publisher(
-            Float64, '/gait/swing_duration', 10)
         self._gait_client = self.create_client(SetBool, '/gait/enable')
         self.create_subscription(Joy, '/joy', self._on_joy, 10)
         self.create_timer(1.0 / rate, self._publish)
@@ -144,7 +127,7 @@ class TeleopNode(Node):
         if self._stepping:
             self._twist.linear.x = forward * float(
                 self._parameters['scale_linear_x'])
-            self._twist.linear.y = -lateral * float(
+            self._twist.linear.y = lateral * float(
                 self._parameters['scale_linear_y'])
             self._twist.angular.z = -yaw * float(self._parameters['scale_yaw'])
             self._pose.pose.position.z = height * float(
@@ -160,19 +143,6 @@ class TeleopNode(Node):
              self._pose.pose.orientation.z,
              self._pose.pose.orientation.w) = quaternion
 
-        adjustment = float(self._parameters['adjustment_step'])
-        self._clearance = max(0.0, self._clearance + self._axis(
-            message, 'axis_dpad_vertical') * adjustment)
-        self._penetration = max(0.0, self._penetration - self._axis(
-            message, 'axis_dpad_horizontal') * adjustment)
-        reset_gait = (
-            self._rising_edge(message.buttons, 'button_left_bumper')
-            or self._rising_edge(message.buttons, 'button_right_bumper')
-        )
-        if reset_gait:
-            self._clearance = float(self._parameters['clearance_height'])
-            self._penetration = float(self._parameters['penetration_depth'])
-            self._swing_duration = float(self._parameters['swing_duration'])
         self._last_buttons = list(message.buttons)
 
     def _publish(self) -> None:
@@ -187,9 +157,6 @@ class TeleopNode(Node):
             self._pose_publisher.publish(self._pose)
         self._estop_publisher.publish(Bool(data=self._estop))
         self._imu_publisher.publish(Bool(data=self._imu_auto))
-        self._clearance_publisher.publish(Float64(data=self._clearance))
-        self._penetration_publisher.publish(Float64(data=self._penetration))
-        self._swing_publisher.publish(Float64(data=self._swing_duration))
 
 
 def main(args=None) -> None:
