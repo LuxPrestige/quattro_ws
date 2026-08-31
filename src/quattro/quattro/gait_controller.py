@@ -72,6 +72,10 @@ class GaitController(Node):
             'stop_ramp_rate', 0.3).value)
         self._initial_pose_duration = float(self.declare_parameter(
             'initial_pose_duration', 1.0).value)
+        self._view_translation_rate = float(self.declare_parameter(
+            'view_translation_rate', 0.08).value)
+        self._view_rotation_rate = float(self.declare_parameter(
+            'view_rotation_rate', 0.5).value)
         self._staged_initial_pose = bool(self.declare_parameter(
             'staged_initial_pose', False).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
@@ -96,10 +100,12 @@ class GaitController(Node):
         if (self._control_frequency <= 0.0 or self._command_timeout <= 0.0 or
                 self._velocity_ramp_rate <= 0.0 or
                 self._stop_ramp_rate <= 0.0 or
-                self._initial_pose_duration <= 0.0):
+                self._initial_pose_duration <= 0.0 or
+                self._view_translation_rate <= 0.0 or
+                self._view_rotation_rate <= 0.0):
             raise ValueError(
                 'control_frequency, command_timeout, ramp rates, and '
-                'initial_pose_duration must be positive')
+                'initial_pose_duration and pose rates must be positive')
 
         geometry = RobotGeometry(**geometry_values)
         self._kinematics = QuadrupedKinematics(geometry)
@@ -110,6 +116,8 @@ class GaitController(Node):
             (0.0, self._walking_pitch_bias, 0.0) if start_enabled
             else (0.0, 0.0, 0.0))
         self._body_translation = (0.0, 0.0, 0.0)
+        self._target_body_rpy = self._body_rpy
+        self._target_body_translation = self._body_translation
         self._imu_rpy = (0.0, 0.0, 0.0)
         self._imu_rates = (0.0, 0.0)
         self._integral = [0.0, 0.0]
@@ -184,10 +192,10 @@ class GaitController(Node):
 
     def _on_pose(self, message: PoseStamped) -> None:
         pose = message.pose
-        self._body_rpy = quaternion_to_rpy(
+        self._target_body_rpy = quaternion_to_rpy(
             pose.orientation.x, pose.orientation.y,
             pose.orientation.z, pose.orientation.w)
-        self._body_translation = (
+        self._target_body_translation = (
             pose.position.x, pose.position.y, pose.position.z)
 
     def _on_imu(self, message: Imu) -> None:
@@ -226,6 +234,8 @@ class GaitController(Node):
         if request.data:
             self._body_rpy = (0.0, self._walking_pitch_bias, 0.0)
             self._body_translation = (0.0, 0.0, 0.0)
+            self._target_body_rpy = self._body_rpy
+            self._target_body_translation = self._body_translation
         response.success = True
         response.message = 'stepping' if request.data else 'viewing'
         return response
@@ -289,6 +299,17 @@ class GaitController(Node):
             ]
         velocity = tuple(self._smoothed_velocity[:2])
         yaw_rate = self._smoothed_velocity[2]
+        dt = 1.0 / self._control_frequency
+
+        if not self._gait_enabled:
+            self._body_translation = tuple(
+                ramp_value(current, target, self._view_translation_rate, dt)
+                for current, target in zip(
+                    self._body_translation, self._target_body_translation))
+            self._body_rpy = tuple(
+                ramp_value(current, target, self._view_rotation_rate, dt)
+                for current, target in zip(
+                    self._body_rpy, self._target_body_rpy))
 
         try:
             if self._gait_enabled:
@@ -303,7 +324,7 @@ class GaitController(Node):
                 feet = self._gait.update(
                     1.0 / self._control_frequency, (0.0, 0.0), 0.0,
                     self._contacts, complete_cycle_on_stop=False)
-            body_rpy = self._controlled_body_rpy(1.0 / self._control_frequency)
+            body_rpy = self._controlled_body_rpy(dt)
             positions = self._kinematics.inverse(
                 body_rpy, self._body_translation, feet)
         except (ValueError, UnreachableTargetError) as error:

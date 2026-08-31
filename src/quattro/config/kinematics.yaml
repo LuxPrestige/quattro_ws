@@ -31,7 +31,7 @@ gait_controller:
     penetration_depth: 0.005         # 스탠스 구간 중 발이 nominal 높이보다 아래로 내려가는 최대 깊이, 접지 컴플라이언스를 흉내내는 값 (m)
 
     # --- 걷는 동안의 고정 몸통 자세 보정 ---
-    walking_pitch_bias: 0.0523599        # 보행 중 몸통을 앞으로 기울이는 고정 pitch 값, 양수=전방 기울임 (rad)
+    walking_pitch_bias: 0.0872665        # 보행 중 몸통을 앞으로 기울이는 고정 pitch 값, 양수=전방 기울임 (rad)
 
     # --- 속도 명령 및 램프 제어 ---
     max_linear_speed: 0.3          # cmd_vel로 허용되는 최대 선속도, 초과 시 예외 발생 (m/s)
@@ -40,6 +40,10 @@ gait_controller:
     velocity_ramp_rate: 1.5        # cmd_vel 목표 속도가 변할 때 적용되는 가속 램프율 (m/s^2, rad/s^2)
     stop_ramp_rate: 1.5            # cmd_vel 목표가 정지(0)로 바뀔 때 적용되는 감속 램프율 (m/s^2, rad/s^2)
     command_timeout: 0.50          # 마지막 cmd_vel 수신 후 이 시간이 지나면 자동으로 속도를 0으로 정지 (s)
+
+    # --- view 모드 자세 명령 속도 제한 ---
+    view_translation_rate: 0.08    # 몸통 x/y/z 목표로 이동하는 최대 속도 (m/s)
+    view_rotation_rate: 0.50       # 몸통 roll/pitch/yaw 목표로 회전하는 최대 속도 (rad/s)
 
     # --- 제어 루프 및 시작 옵션 ---
     control_frequency: 100.0       # 제어 루프 주기 (Hz)

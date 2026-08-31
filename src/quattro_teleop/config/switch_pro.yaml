@@ -20,8 +20,12 @@ quattro_teleop:
     scale_linear_x: 0.30
     scale_linear_y: 0.30
     scale_yaw: 1.0
-    scale_height: 0.15
-    scale_roll_pitch: 0.785
+    # Absolute body heights in view mode. body_height_default must match
+    # quattro/config/kinematics.yaml nominal_height.
+    body_height_min: 0.17
+    body_height_default: 0.28
+    body_height_max: 0.40
+    scale_roll_pitch: 0.585
     deadzone: 0.10
     joy_timeout_sec: 0.5
     publish_rate_hz: 20.0

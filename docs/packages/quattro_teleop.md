@@ -27,6 +27,8 @@ src/quattro_teleop/quattro_teleop/
 
 **입력 매핑**(기본값, 전부 파라미터로 재설정 가능): 왼쪽 스틱 = 전진/횡이동(stepping) 또는 pitch/roll(pose), 오른쪽 스틱 X = yaw, 오른쪽 스틱 Y = 높이, D-pad = gait clearance/penetration 실시간 조정, `button_switch_mode` = stepping↔pose 전환, `button_estop` = E-stop 토글, `button_imu_auto` = IMU balance 토글, 범퍼 두 개 = gait 조정값을 launch 기본값으로 리셋.
 
+view(pose) 모드의 오른쪽 스틱 Y 높이는 `body_height_min`(기본 0.00 m), `body_height_default`(기본 0.28 m), `body_height_max`(기본 0.50 m)의 절대 몸통 높이 범위로 매핑된다. 스틱 중립은 항상 기본 높이이며, 위/아래 방향은 각각 기본↔최대와 기본↔최소 사이를 선형 보간한다. `/body_pose`에는 nominal 자세 기준 Z 변위가 실리므로 `body_height_default`는 `quattro/config/kinematics.yaml`의 `nominal_height`와 같아야 한다. 높이는 `0 <= min <= default <= max`를 만족하지 않으면 노드 시작 시 거부된다.
+
 **안전 원칙**
 
 - `apply_deadzone`으로 축 입력에 연속 데드존을 적용해 중립 근처 떨림을 제거한다.

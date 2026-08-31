@@ -26,6 +26,16 @@ def axis_value(axes: List[float], index: int, deadzone: float) -> float:
     return apply_deadzone(float(axes[index]), deadzone)
 
 
+def height_offset(
+        axis: float, minimum: float, default: float, maximum: float) -> float:
+    """Map a normalized axis to an offset from the default body height."""
+    if axis >= 0.0:
+        desired = default + axis * (maximum - default)
+    else:
+        desired = default + axis * (default - minimum)
+    return desired - default
+
+
 class TeleopNode(Node):
     """Implement the reference controller mapping with standard messages."""
 
@@ -39,7 +49,9 @@ class TeleopNode(Node):
             'scale_linear_x': 0.30,
             'scale_linear_y': 0.30,
             'scale_yaw': 1.0,
-            'scale_height': 0.15,
+            'body_height_min': 0.00,
+            'body_height_default': 0.28,
+            'body_height_max': 0.50,
             'scale_roll_pitch': 0.785,
             'button_switch_mode': 0,
             'button_estop': 1,
@@ -60,6 +72,16 @@ class TeleopNode(Node):
             raise ValueError('deadzone must be in [0.0, 1.0)')
         if self._timeout <= 0.0 or rate <= 0.0:
             raise ValueError('timeout and publish rate must be positive')
+        height_min = float(self._parameters['body_height_min'])
+        height_default = float(self._parameters['body_height_default'])
+        height_max = float(self._parameters['body_height_max'])
+        if (not all(math.isfinite(value) for value in (
+                height_min, height_default, height_max)) or
+                height_min < 0.0 or
+                not height_min <= height_default <= height_max):
+            raise ValueError(
+                'body heights must be finite and satisfy '
+                '0 <= min <= default <= max')
 
         self._last_joy_time = None
         self._last_buttons: List[int] = []
@@ -119,7 +141,7 @@ class TeleopNode(Node):
 
         forward = self._axis(message, 'axis_linear_x')
         lateral = self._axis(message, 'axis_linear_y')
-        height = self._axis(message, 'axis_height')
+        height_axis = self._axis(message, 'axis_height')
         yaw = self._axis(message, 'axis_yaw')
         self._twist = Twist()
         self._pose = PoseStamped()
@@ -130,14 +152,16 @@ class TeleopNode(Node):
             self._twist.linear.y = lateral * float(
                 self._parameters['scale_linear_y'])
             self._twist.angular.z = yaw * float(self._parameters['scale_yaw'])
-            self._pose.pose.position.z = height * float(
-                self._parameters['scale_height'])
         else:
             roll = -lateral * float(self._parameters['scale_roll_pitch'])
             pitch = forward * float(self._parameters['scale_roll_pitch'])
             yaw_angle = yaw * float(self._parameters['scale_roll_pitch'])
-            self._pose.pose.position.z = height * float(
-                self._parameters['scale_height'])
+            self._pose.pose.position.z = height_offset(
+                height_axis,
+                float(self._parameters['body_height_min']),
+                float(self._parameters['body_height_default']),
+                float(self._parameters['body_height_max']),
+            )
             quaternion = self._quaternion_from_rpy(roll, pitch, yaw_angle)
             (self._pose.pose.orientation.x, self._pose.pose.orientation.y,
              self._pose.pose.orientation.z,

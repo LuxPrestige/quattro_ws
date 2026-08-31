@@ -3,7 +3,11 @@
 import pytest
 
 from quattro_teleop.keyboard_teleop import command_for_key
-from quattro_teleop.teleop_node import apply_deadzone, axis_value
+from quattro_teleop.teleop_node import (
+    apply_deadzone,
+    axis_value,
+    height_offset,
+)
 
 
 def test_deadzone_suppresses_small_input() -> None:
@@ -18,6 +22,17 @@ def test_deadzone_rescales_remaining_range() -> None:
 
 def test_missing_axis_is_zero() -> None:
     assert axis_value([0.5], 3, 0.1) == 0.0
+
+
+@pytest.mark.parametrize(('axis', 'expected'), [
+    (-1.0, -0.28),
+    (-0.5, -0.14),
+    (0.0, 0.0),
+    (0.5, 0.11),
+    (1.0, 0.22),
+])
+def test_height_offset_maps_around_default(axis: float, expected: float) -> None:
+    assert height_offset(axis, 0.0, 0.28, 0.50) == pytest.approx(expected)
 
 
 def test_keyboard_commands_use_ros_axes() -> None:
