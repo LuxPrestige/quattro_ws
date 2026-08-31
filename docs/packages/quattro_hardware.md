@@ -185,6 +185,24 @@ runtime 중 stale encoder, stale heartbeat, non-zero `axis_error`, CAN passive/b
 
 Encoder feedback을 얻기 위해 0x009 request를 주기적으로 보내지 않는다.
 
+### stale feedback / stale heartbeat는 걷는 동안 완화된다
+
+`stale encoder`(feedback_timeout_ms)와 `stale heartbeat`(heartbeat_timeout_ms) 체크는 **bringup 단계(초기자세 진입까지)에서만 항상 적용**되고, **정상 보행 중에는 완화**된다. 이 둘은 CAN 통신 타이밍에 관한 체크라, 보행 중 CAN 버스 부하가 일시적으로 늘어나는 상황에서 실제 모터 이상 없이도 오탐 fault를 낼 수 있기 때문이다.
+
+`axis_error != 0`(모터 자신이 보고하는 과전류/과열 등 실제 하드웨어 fault)과 CAN bus unhealthy 체크는 **이 완화의 영향을 받지 않고 항상 적용**된다.
+
+전환 신호는 `<ros2_control>` URDF 블록의 `safety_mode` gpio, command interface `walking_active`다.
+
+```text
+walking_active > 0.5  -> stale feedback / stale heartbeat 체크 생략 (axis_error는 계속 체크)
+walking_active <= 0.5 또는 NaN 또는 인터페이스 자체가 없음
+                       -> 두 체크 모두 항상 적용 (fail-safe 기본값)
+```
+
+`walking_active`는 `gpio_command_controller`(`gpio_controllers/GpioCommandController`, `hardware_controllers.yaml`)가 소유하는 command interface이고, `gait_controller`가 `/gpio_command_controller/commands`(`control_msgs/DynamicInterfaceGroupValues`)로 매 제어 주기마다 현재 값을 발행한다: 초기자세로 이동 중(`_initial_pose_pending`)이면 `0.0`, 그 이후 정상 보행 상태면 `1.0`. 아무도 이 인터페이스에 값을 쓴 적이 없으면(컨트롤러 미기동, URDF에 gpio 자체가 없는 경우 등) `get_command`가 예외를 던지거나 미확정 값을 반환할 수 있는데, `QuattroSystem::read()`는 이를 전부 "걷는 중이 아님"으로 취급해 체크를 켠 상태로 유지한다 (`src/quattro_hardware/src/quattro_system.cpp`의 `read()` 앞부분, try/catch로 감싸져 있음).
+
+이 설계로 이전에 발생했던 "초기자세로 이동하는 동안 stale feedback으로 12축 전체 정지"는 그대로 방지되고(bringup 중에는 체크가 항상 켜져 있음), 실제 보행 중 CAN 버스 혼잡으로 인한 오탐 정지는 줄어든다. 반면 axis_error가 뜻하는 실제 모터 보호 이벤트(과전류/과열 등)는 보행 중에도 그대로 로봇을 세운다.
+
 ## 8. `write()`
 
 `write()`는 상위 `position` command interface를 motor revolution으로 변환하여 `Set_Input_Pos(0x00C)`로 전송한다.
@@ -210,10 +228,10 @@ startup / Closed Loop 진입
 - activation timeout
 - Closed Loop 전환 실패
 - post-Closed-Loop encoder 미수신
-- heartbeat timeout
-- encoder stale
-- `axis_error != 0`
-- CAN bus unhealthy
+- heartbeat timeout (bringup 단계에서만; 보행 중에는 `walking_active`로 완화됨 -- 위 7절 참고)
+- encoder stale (bringup 단계에서만; 보행 중에는 `walking_active`로 완화됨 -- 위 7절 참고)
+- `axis_error != 0` (bringup/보행 구분 없이 항상)
+- CAN bus unhealthy (bringup/보행 구분 없이 항상)
 - 연속 position command 전송 실패
 - controller/hardware lifecycle 종료
 

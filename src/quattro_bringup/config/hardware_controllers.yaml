@@ -13,6 +13,18 @@ controller_manager:
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+    gpio_command_controller:
+      type: gpio_controllers/GpioCommandController
+
+gpio_command_controller:
+  ros__parameters:
+    gpios:
+      - safety_mode
+    command_interfaces:
+      safety_mode:
+        interfaces:
+          - walking_active
+
 joint_trajectory_controller:
   ros__parameters:
     joints:

@@ -116,6 +116,17 @@ hardware_interface::HardwareInfo make_hardware_info(std::size_t joint_count)
     info.joints.push_back(
       make_joint("joint_" + std::to_string(i), "can0", static_cast<int>(i), 1.0));
   }
+
+  // Mirrors the <gpio> block in quattro.urdf.xacro: gait_controller's
+  // walking_active flag, read by QuattroSystem::read() to relax the stale
+  // feedback/heartbeat checks while walking (never axis_error).
+  hardware_interface::ComponentInfo safety_mode;
+  safety_mode.name = "safety_mode";
+  hardware_interface::InterfaceInfo walking_active;
+  walking_active.name = "walking_active";
+  safety_mode.command_interfaces.push_back(walking_active);
+  info.gpios.push_back(safety_mode);
+
   return info;
 }
 

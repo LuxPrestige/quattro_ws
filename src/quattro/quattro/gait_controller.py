@@ -3,6 +3,7 @@
 import math
 
 from builtin_interfaces.msg import Time
+from control_msgs.msg import DynamicInterfaceGroupValues, InterfaceValue
 from geometry_msgs.msg import PoseStamped, Twist
 from quattro.gait import GaitGenerator, GaitParameters
 from quattro.kinematics import (
@@ -118,6 +119,12 @@ class GaitController(Node):
         self._publisher = self.create_publisher(
             JointTrajectory,
             f'{trajectory_controller_name}/joint_trajectory', 10)
+        # Tells QuattroSystem::read() whether it is safe to relax the stale
+        # feedback/heartbeat timing checks (docs/packages/quattro_hardware.md
+        # section 7). False during the initial pose transition, true once
+        # normal walking begins; axis_error is never affected by this.
+        self._walking_active_publisher = self.create_publisher(
+            DynamicInterfaceGroupValues, 'gpio_command_controller/commands', 10)
         self._subscription = self.create_subscription(
             Twist, 'cmd_vel', self._on_command, 10)
         self.create_subscription(
@@ -334,10 +341,20 @@ class GaitController(Node):
         else:
             trajectory.points = [point]
         self._publisher.publish(trajectory)
+        self._publish_walking_active(not self._initial_pose_pending)
         if self._initial_pose_pending:
             self._initial_pose_pending = False
             self._initial_pose_deadline = (
                 now + Duration(seconds=duration))
+
+    def _publish_walking_active(self, active: bool) -> None:
+        message = DynamicInterfaceGroupValues()
+        message.interface_groups = ['safety_mode']
+        value = InterfaceValue()
+        value.interface_names = ['walking_active']
+        value.values = [1.0 if active else 0.0]
+        message.interface_values = [value]
+        self._walking_active_publisher.publish(message)
 
 
 def main(args=None) -> None:

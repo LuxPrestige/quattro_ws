@@ -129,13 +129,13 @@ class TeleopNode(Node):
                 self._parameters['scale_linear_x'])
             self._twist.linear.y = lateral * float(
                 self._parameters['scale_linear_y'])
-            self._twist.angular.z = -yaw * float(self._parameters['scale_yaw'])
+            self._twist.angular.z = yaw * float(self._parameters['scale_yaw'])
             self._pose.pose.position.z = height * float(
                 self._parameters['scale_height'])
         else:
             roll = -lateral * float(self._parameters['scale_roll_pitch'])
             pitch = forward * float(self._parameters['scale_roll_pitch'])
-            yaw_angle = -yaw * float(self._parameters['scale_roll_pitch'])
+            yaw_angle = yaw * float(self._parameters['scale_roll_pitch'])
             self._pose.pose.position.z = height * float(
                 self._parameters['scale_height'])
             quaternion = self._quaternion_from_rpy(roll, pitch, yaw_angle)

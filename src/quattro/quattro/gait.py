@@ -43,8 +43,8 @@ class GaitParameters:
     def __post_init__(self) -> None:
         if self.swing_duration <= 0.0 or self.stance_duration <= 0.0:
             raise ValueError('swing and stance durations must be positive')
-        if self.stance_duration > 1.3 * self.swing_duration:
-            raise ValueError('stance_duration must not exceed 1.3 * swing_duration')
+        if self.stance_duration > 1.8 * self.swing_duration:
+            raise ValueError('stance_duration must not exceed 1.8 * swing_duration')
         if self.clearance_height < 0.0 or self.penetration_depth < 0.0:
             raise ValueError('foot heights must not be negative')
         if (self.max_linear_speed <= 0.0 or self.max_yaw_rate <= 0.0 or

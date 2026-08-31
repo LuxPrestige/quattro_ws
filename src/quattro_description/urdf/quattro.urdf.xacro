@@ -629,6 +629,18 @@
       <xacro:quattro_hardware_joint name="back_right_hip_joint" lower="-0.7853981634" upper="0.7853981634"/>
       <xacro:quattro_hardware_joint name="back_right_upper_leg_joint" lower="-1.5707963268" upper="2.4434609528"/>
       <xacro:quattro_hardware_joint name="back_right_lower_leg_joint" lower="-2.3561944902" upper="2.3561944902"/>
+      <!--
+        Written by gpio_command_controller (see hardware_controllers.yaml),
+        which gait_controller drives via /gpio_command_controller/commands.
+        1.0 while walking suppresses the stale feedback/heartbeat checks in
+        QuattroSystem::read(); see docs/packages/quattro_hardware.md
+        section 7. Defaults to unset (fail-safe: treated as 0.0, checks
+        stay on) until a controller actually writes it, so the bringup
+        transition to the initial pose is always checked.
+      -->
+      <gpio name="safety_mode">
+        <command_interface name="walking_active"/>
+      </gpio>
     </ros2_control>
   </xacro:unless>
 

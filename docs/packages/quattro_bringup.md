@@ -79,6 +79,8 @@ joint_state_broadcaster ACTIVE
  ↓
 joint_trajectory_controller ACTIVE
  ↓
+gpio_command_controller ACTIVE
+ ↓
 READY / HOLD
  ↓
 /bringup/ready latched true
@@ -152,6 +154,7 @@ VERIFY_HARDWARE
 START_JSB
 VERIFY_JOINT_STATES
 START_JTC
+START_GPIO
 READY
 FAULT
 ```
@@ -164,7 +167,7 @@ FAULT
 | `CONFIGURE_HARDWARE` | `set_hardware_component_state` → inactive |
 | `ACTIVATE_HARDWARE` | `set_hardware_component_state` → active |
 | `VERIFY_HARDWARE` | `list_hardware_components` |
-| `START_JSB` / `START_JTC` | `load_controller`, `configure_controller`, `switch_controller`(STRICT), `list_controllers` |
+| `START_JSB` / `START_JTC` / `START_GPIO` | `load_controller`, `configure_controller`, `switch_controller`(STRICT), `list_controllers` |
 | `VERIFY_JOINT_STATES` | `/joint_states` 구독 |
 | `READY` | `/bringup/ready` latched 발행 |
 
@@ -207,12 +210,13 @@ GIM6010-8 x12          CLOSED LOOP
 motor shafts           current-position hold
 joint_state_broadcaster ACTIVE
 joint_trajectory_controller ACTIVE
+gpio_command_controller ACTIVE
 joint_states           valid
 /bringup/ready          latched true
 Gait                    OFF
 ```
 
-READY는 걷는 상태가 아니다.
+READY는 걷는 상태가 아니다. `gpio_command_controller`가 active라는 것은 `safety_mode/walking_active` 인터페이스가 배선되어 있다는 뜻일 뿐, 값 자체는 아직 `gait_controller`가 초기자세 이동 중이라 `0.0`(걷는 중 아님, stale feedback/heartbeat 체크는 계속 켜짐)이다. 자세한 내용은 `docs/packages/quattro_hardware.md` 7절.
 
 ## controller 설정
 
@@ -222,6 +226,7 @@ READY는 걷는 상태가 아니다.
 - `QuattroSystem` 초기 lifecycle은 inactive
 - `joint_state_broadcaster`
 - `joint_trajectory_controller`
+- `gpio_command_controller` (`gpio_controllers/GpioCommandController`, gpio `safety_mode`, command interface `walking_active`)
 - position command interface
 - position/velocity state interface
 

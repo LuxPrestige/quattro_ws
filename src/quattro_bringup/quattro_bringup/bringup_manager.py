@@ -20,6 +20,9 @@ READY means:
   and synchronized to a post-closed-loop encoder reading)
 * ``joint_state_broadcaster`` active and publishing 12 valid joints
 * ``joint_trajectory_controller`` active
+* ``gpio_command_controller`` active, carrying gait_controller's
+  walking_active flag into ``QuattroSystem`` (see
+  ``docs/packages/quattro_hardware.md`` section 7)
 * gait OFF -- the robot holds position and is not walking
 
 On READY the node publishes a latched (transient-local) ``True`` on
@@ -57,6 +60,7 @@ from std_msgs.msg import Bool
 HARDWARE_COMPONENT = 'QuattroSystem'
 JOINT_STATE_BROADCASTER = 'joint_state_broadcaster'
 JOINT_TRAJECTORY_CONTROLLER = 'joint_trajectory_controller'
+GPIO_COMMAND_CONTROLLER = 'gpio_command_controller'
 READY_TOPIC = 'bringup/ready'
 
 
@@ -70,6 +74,7 @@ class BringupState(Enum):
     START_JSB = 'START_JSB'
     VERIFY_JOINT_STATES = 'VERIFY_JOINT_STATES'
     START_JTC = 'START_JTC'
+    START_GPIO = 'START_GPIO'
     READY = 'READY'
     FAULT = 'FAULT'
 
@@ -331,6 +336,20 @@ class BringupManager(Node):
         self.get_logger().info(f'Starting {JOINT_TRAJECTORY_CONTROLLER}...')
         return self._start_controller(JOINT_TRAJECTORY_CONTROLLER)
 
+    def start_gpio_command_controller(self) -> bool:
+        """
+        Start the controller that carries gait_controller's walking_active flag.
+
+        QuattroSystem::read() only relaxes the stale feedback/heartbeat
+        timing checks once this reaches it (see
+        docs/packages/quattro_hardware.md section 7); axis_error stays
+        checked regardless. Until gait_controller writes a value, the
+        interface is unset and QuattroSystem treats that as "not walking",
+        so the checks stay on for the initial pose transition below.
+        """
+        self.get_logger().info(f'Starting {GPIO_COMMAND_CONTROLLER}...')
+        return self._start_controller(GPIO_COMMAND_CONTROLLER)
+
     # -- driver -----------------------------------------------------------
 
     def run(self) -> bool:
@@ -343,6 +362,7 @@ class BringupManager(Node):
             (BringupState.START_JSB, self.start_joint_state_broadcaster),
             (BringupState.VERIFY_JOINT_STATES, self.verify_joint_states),
             (BringupState.START_JTC, self.start_joint_trajectory_controller),
+            (BringupState.START_GPIO, self.start_gpio_command_controller),
         )
         for state, step in steps:
             self.state = state
@@ -367,6 +387,7 @@ class BringupManager(Node):
             '  Encoder                      post-closed-loop synchronized\n'
             f'  {JOINT_STATE_BROADCASTER:<28} ACTIVE\n'
             f'  {JOINT_TRAJECTORY_CONTROLLER:<28} ACTIVE\n'
+            f'  {GPIO_COMMAND_CONTROLLER:<28} ACTIVE\n'
             f'  {"Gait":<28} {gait_line}\n'
             f'  {self._ready_publisher.topic_name:<28} LATCHED true\n'
             f'{closing}')

@@ -739,6 +739,22 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
   // already the tightest resource here.
   motor_manager_->poll();
 
+  // Written by gpio_command_controller, ultimately driven by
+  // gait_controller (docs/packages/quattro_hardware.md section 7). NaN or
+  // anything <= 0.5 -- including the unset default before any controller
+  // has ever written it, or a URDF that omits the safety_mode gpio -- is
+  // treated as "not walking", so the bringup transition to the initial pose
+  // is always covered by the timing checks below. axis_error is a real
+  // motor-reported fault and is never gated by this: it stays checked in
+  // both phases.
+  bool walking_active = false;
+  try {
+    const double walking_active_raw = get_command<double>("safety_mode/walking_active");
+    walking_active = std::isfinite(walking_active_raw) && walking_active_raw > 0.5;
+  } catch (const std::exception &) {
+    walking_active = false;
+  }
+
   bool faulted = false;
   for (const auto & joint : joints_) {
     const auto * motor = motor_manager_->motor(joint.node_id);
@@ -764,11 +780,11 @@ hardware_interface::return_type QuattroSystem::read(const rclcpp::Time &, const 
     if (!active_ || motor == nullptr) {
       continue;
     }
-    if (!motor->has_fresh_feedback(feedback_timeout_, now)) {
+    if (!walking_active && !motor->has_fresh_feedback(feedback_timeout_, now)) {
       RCLCPP_ERROR(get_logger(), "Joint '%s': stale feedback", joint.name.c_str());
       faulted = true;
     }
-    if (!motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
+    if (!walking_active && !motor->has_fresh_heartbeat(heartbeat_timeout_, now)) {
       RCLCPP_ERROR(get_logger(), "Joint '%s': stale heartbeat", joint.name.c_str());
       faulted = true;
     }
