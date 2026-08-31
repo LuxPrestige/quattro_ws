@@ -45,6 +45,12 @@ gait_controller:
     view_translation_rate: 0.08    # 몸통 x/y/z 목표로 이동하는 최대 속도 (m/s)
     view_rotation_rate: 0.50       # 몸통 roll/pitch/yaw 목표로 회전하는 최대 속도 (rad/s)
 
+    # --- 앉기 자세 및 전환 시간 ---
+    sit_transition_duration: 3.0   # 앉기/기본 자세 전환에 걸리는 시간 (s)
+    sit_hip_angle: 0.0             # hip 목표각 0 deg (rad)
+    sit_upper_angle: 2.3561944902  # upper 목표각 135 deg (rad)
+    sit_lower_angle: -2.2340214426 # lower 목표각 -128 deg (rad)
+
     # --- 제어 루프 및 시작 옵션 ---
     control_frequency: 100.0       # 제어 루프 주기 (Hz)
     start_enabled: true            # 노드 시작 즉시 gait 출력을 활성화할지 여부

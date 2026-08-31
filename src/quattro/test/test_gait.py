@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 
 from quattro.gait import FootTrajectoryState, GaitGenerator, GaitParameters
-from quattro.gait_controller import ramp_value, staged_joint_targets
+from quattro.gait_controller import (
+    ramp_value,
+    repeated_leg_joint_targets,
+    staged_joint_targets,
+)
 from quattro.kinematics import LEG_NAMES, QuadrupedKinematics
 
 
@@ -271,3 +275,9 @@ def test_stop_ramp_reduces_command_without_crossing_zero():
     assert all(next_value <= current
                for current, next_value in zip(samples, samples[1:]))
     assert samples[-1] == 0.0
+
+
+def test_repeated_leg_joint_targets_use_canonical_joint_order():
+    targets = repeated_leg_joint_targets(0.0, 2.0, -1.0)
+
+    assert targets == [0.0, 2.0, -1.0] * 4

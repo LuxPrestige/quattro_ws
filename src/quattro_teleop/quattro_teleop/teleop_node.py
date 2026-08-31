@@ -55,6 +55,7 @@ class TeleopNode(Node):
             'scale_roll_pitch': 0.785,
             'button_switch_mode': 0,
             'button_estop': 1,
+            'button_sit': 2,
             'button_imu_auto': 3,
             'deadzone': 0.10,
             'joy_timeout_sec': 0.5,
@@ -87,6 +88,7 @@ class TeleopNode(Node):
         self._last_buttons: List[int] = []
         self._stepping = bool(self._parameters['start_stepping'])
         self._estop = False
+        self._sitting = False
         self._imu_auto = False
         self._twist = Twist()
         self._pose = PoseStamped()
@@ -95,6 +97,7 @@ class TeleopNode(Node):
         self._pose_publisher = self.create_publisher(
             PoseStamped, '/body_pose', 10)
         self._estop_publisher = self.create_publisher(Bool, '/estop', 10)
+        self._sit_publisher = self.create_publisher(Bool, '/sit', 10)
         self._imu_publisher = self.create_publisher(Bool, '/imu_auto', 10)
         self._gait_client = self.create_client(SetBool, '/gait/enable')
         self.create_subscription(Joy, '/joy', self._on_joy, 10)
@@ -126,7 +129,10 @@ class TeleopNode(Node):
     def _on_joy(self, message: Joy) -> None:
         self._last_joy_time = self.get_clock().now()
         if self._rising_edge(message.buttons, 'button_switch_mode'):
-            if self._gait_client.service_is_ready():
+            if self._sitting:
+                self.get_logger().warning(
+                    'Stand up before switching to stepping mode.')
+            elif self._gait_client.service_is_ready():
                 self._stepping = not self._stepping
                 request = SetBool.Request()
                 request.data = self._stepping
@@ -136,6 +142,9 @@ class TeleopNode(Node):
                     'Gait service is not ready; mode change was ignored.')
         if self._rising_edge(message.buttons, 'button_estop'):
             self._estop = not self._estop
+        if (self._rising_edge(message.buttons, 'button_sit') and
+                not self._stepping):
+            self._sitting = not self._sitting
         if self._rising_edge(message.buttons, 'button_imu_auto'):
             self._imu_auto = not self._imu_auto
 
@@ -180,6 +189,7 @@ class TeleopNode(Node):
             self._pose.header.stamp = self.get_clock().now().to_msg()
             self._pose_publisher.publish(self._pose)
         self._estop_publisher.publish(Bool(data=self._estop))
+        self._sit_publisher.publish(Bool(data=self._sitting))
         self._imu_publisher.publish(Bool(data=self._imu_auto))
 
 

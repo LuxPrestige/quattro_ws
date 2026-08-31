@@ -45,6 +45,16 @@ def staged_joint_targets(
     return [hips, list(target)]
 
 
+def repeated_leg_joint_targets(
+        hip: float, upper: float, lower: float,
+        leg_count: int = 4) -> list[float]:
+    """Build one identical hip/upper/lower target for every leg."""
+    if leg_count <= 0 or not all(math.isfinite(value)
+                                 for value in (hip, upper, lower)):
+        raise ValueError('sit joint targets must be finite')
+    return [value for _ in range(leg_count) for value in (hip, upper, lower)]
+
+
 class GaitController(Node):
     """Run a safe, timeout-aware trot trajectory generator."""
 
@@ -76,6 +86,14 @@ class GaitController(Node):
             'view_translation_rate', 0.08).value)
         self._view_rotation_rate = float(self.declare_parameter(
             'view_rotation_rate', 0.5).value)
+        self._sit_transition_duration = float(self.declare_parameter(
+            'sit_transition_duration', 3.0).value)
+        self._sit_hip_angle = float(self.declare_parameter(
+            'sit_hip_angle', math.radians(0.0)).value)
+        self._sit_upper_angle = float(self.declare_parameter(
+            'sit_upper_angle', math.radians(135.0)).value)
+        self._sit_lower_angle = float(self.declare_parameter(
+            'sit_lower_angle', math.radians(-128.0)).value)
         self._staged_initial_pose = bool(self.declare_parameter(
             'staged_initial_pose', False).value)
         self._pid_kp = float(self.declare_parameter('pose_pid.kp', 1.5).value)
@@ -102,10 +120,24 @@ class GaitController(Node):
                 self._stop_ramp_rate <= 0.0 or
                 self._initial_pose_duration <= 0.0 or
                 self._view_translation_rate <= 0.0 or
-                self._view_rotation_rate <= 0.0):
+                self._view_rotation_rate <= 0.0 or
+                self._sit_transition_duration <= 0.0):
             raise ValueError(
                 'control_frequency, command_timeout, ramp rates, and '
-                'initial_pose_duration and pose rates must be positive')
+                'transition durations and pose rates must be positive')
+        sit_angles = (
+            self._sit_hip_angle, self._sit_upper_angle,
+            self._sit_lower_angle)
+        sit_limits = (
+            (-math.radians(45.0), math.radians(45.0)),
+            (-math.radians(90.0), math.radians(140.0)),
+            (-math.radians(135.0), math.radians(135.0)),
+        )
+        if (not all(math.isfinite(value) for value in sit_angles) or
+                any(not lower <= value <= upper
+                    for value, (lower, upper)
+                    in zip(sit_angles, sit_limits))):
+            raise ValueError('sit joint targets exceed the URDF joint limits')
 
         geometry = RobotGeometry(**geometry_values)
         self._kinematics = QuadrupedKinematics(geometry)
@@ -128,6 +160,8 @@ class GaitController(Node):
         self._joint_positions: dict[str, float] = {}
         self._balance_enabled = False
         self._estop = False
+        self._sit_active = False
+        self._sit_transition_pending = False
         self._contacts = {
             name: False for name in self._kinematics.nominal_foot_positions}
         self._last_command_time = self.get_clock().now()
@@ -148,6 +182,7 @@ class GaitController(Node):
         self.create_subscription(
             Imu, 'imu/data', self._on_imu, qos_profile_sensor_data)
         self.create_subscription(Bool, 'estop', self._on_estop, 10)
+        self.create_subscription(Bool, 'sit', self._on_sit, 10)
         self.create_subscription(Bool, 'imu_auto', self._on_imu_auto, 10)
         self.create_service(SetBool, 'gait/enable', self._set_gait_enabled)
         self.create_service(SetBool, 'balance/enable', self._set_balance_enabled)
@@ -221,10 +256,30 @@ class GaitController(Node):
     def _on_estop(self, message: Bool) -> None:
         self._estop = message.data
 
+    def _on_sit(self, message: Bool) -> None:
+        if message.data == self._sit_active:
+            return
+        if self._gait_enabled:
+            self.get_logger().warning(
+                'Sit command ignored while stepping mode is active.')
+            return
+        self._sit_active = message.data
+        self._sit_transition_pending = True
+        if not self._sit_active:
+            self._body_rpy = (0.0, 0.0, 0.0)
+            self._body_translation = (0.0, 0.0, 0.0)
+            self._target_body_rpy = self._body_rpy
+            self._target_body_translation = self._body_translation
+
     def _on_imu_auto(self, message: Bool) -> None:
         self._balance_enabled = message.data
 
     def _set_gait_enabled(self, request, response):
+        if request.data and (self._sit_active or
+                             self._sit_transition_pending):
+            response.success = False
+            response.message = 'stand up before enabling stepping'
+            return response
         output_was_disabled = not self._output_enabled
         self._gait_enabled = request.data
         self._output_enabled = True
@@ -273,9 +328,12 @@ class GaitController(Node):
             return
         now = self.get_clock().now()
         if (self._initial_pose_deadline is not None and
-                now < self._initial_pose_deadline):
+                now < self._initial_pose_deadline and
+                not self._sit_transition_pending):
             return
         self._initial_pose_deadline = None
+        if self._sit_active and not self._sit_transition_pending:
+            return
         command_age = (now - self._last_command_time).nanoseconds / 1.0e9
         if self._estop:
             self._smoothed_velocity = [0.0, 0.0, 0.0]
@@ -324,9 +382,23 @@ class GaitController(Node):
                 feet = self._gait.update(
                     1.0 / self._control_frequency, (0.0, 0.0), 0.0,
                     self._contacts, complete_cycle_on_stop=False)
-            body_rpy = self._controlled_body_rpy(dt)
-            positions = self._kinematics.inverse(
-                body_rpy, self._body_translation, feet)
+            if self._sit_active:
+                positions = repeated_leg_joint_targets(
+                    self._sit_hip_angle,
+                    self._sit_upper_angle,
+                    self._sit_lower_angle,
+                )
+            elif self._sit_transition_pending:
+                positions = self._kinematics.inverse(
+                    (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0),
+                    self._kinematics.nominal_foot_positions,
+                ).reshape(-1).tolist()
+            else:
+                body_rpy = self._controlled_body_rpy(dt)
+                positions = self._kinematics.inverse(
+                    body_rpy, self._body_translation,
+                    feet).reshape(-1).tolist()
         except (ValueError, UnreachableTargetError) as error:
             self.get_logger().error(f'Rejected gait command: {error}')
             return
@@ -334,14 +406,17 @@ class GaitController(Node):
         trajectory = JointTrajectory()
         trajectory.header.stamp = Time()  # zero stamp = start immediately
         trajectory.joint_names = list(self._kinematics.joint_names)
-        duration = (self._initial_pose_duration if self._initial_pose_pending
-                    else 1.0 / self._control_frequency)
+        sit_transition = self._sit_transition_pending
+        duration = (
+            self._sit_transition_duration if sit_transition else
+            self._initial_pose_duration if self._initial_pose_pending else
+            1.0 / self._control_frequency)
         point = JointTrajectoryPoint()
-        point.positions = positions.reshape(-1).tolist()
+        point.positions = list(positions)
         seconds = int(duration)
         point.time_from_start.sec = seconds
         point.time_from_start.nanosec = int((duration - seconds) * 1.0e9)
-        if self._initial_pose_pending:
+        if self._initial_pose_pending or sit_transition:
             if not all(name in self._joint_positions
                        for name in trajectory.joint_names):
                 return
@@ -349,7 +424,7 @@ class GaitController(Node):
             start.positions = [
                 self._joint_positions[name] for name in trajectory.joint_names]
             trajectory.points = [start]
-            if self._staged_initial_pose:
+            if self._staged_initial_pose and not sit_transition:
                 staged_targets = staged_joint_targets(
                     list(start.positions), list(point.positions))
                 # initial_pose_duration is the budget for the whole
@@ -369,7 +444,13 @@ class GaitController(Node):
         else:
             trajectory.points = [point]
         self._publisher.publish(trajectory)
-        self._publish_walking_active(not self._initial_pose_pending)
+        self._publish_walking_active(
+            not self._initial_pose_pending and
+            not sit_transition and not self._sit_active)
+        if sit_transition:
+            self._sit_transition_pending = False
+            self._initial_pose_deadline = (
+                now + Duration(seconds=duration))
         if self._initial_pose_pending:
             self._initial_pose_pending = False
             self._initial_pose_deadline = (

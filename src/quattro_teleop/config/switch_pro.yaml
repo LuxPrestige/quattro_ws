@@ -14,6 +14,7 @@ quattro_teleop:
     axis_yaw: 2
     button_switch_mode: 0
     button_estop: 1
+    button_sit: 2
     button_imu_auto: 3
 
     # Standard ROS interface values use SI units.

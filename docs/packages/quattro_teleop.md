@@ -21,13 +21,16 @@ src/quattro_teleop/quattro_teleop/
 | `/cmd_vel` | `geometry_msgs/Twist` | stepping 모드 + `/joy` 신선 + estop 아님, 아니면 zero Twist |
 | `/body_pose` | `geometry_msgs/PoseStamped` | pose 모드 + 신선 + estop 아님일 때만 발행(재사용 없음) |
 | `/estop` | `std_msgs/Bool` | 매 주기 현재 상태 발행 |
+| `/sit` | `std_msgs/Bool` | 매 주기 앉기 토글 상태 발행 |
 | `/imu_auto` | `std_msgs/Bool` | 매 주기 현재 상태 발행 |
 | `/gait/clearance_height`, `/gait/penetration_depth`, `/gait/swing_duration` | `std_msgs/Float64` | 매 주기 현재 값 발행 |
 | `/gait/enable` | `std_srvs/SetBool` (클라이언트) | `button_switch_mode` 상승 edge에서만 비동기 호출 |
 
-**입력 매핑**(기본값, 전부 파라미터로 재설정 가능): 왼쪽 스틱 = 전진/횡이동(stepping) 또는 pitch/roll(pose), 오른쪽 스틱 X = yaw, 오른쪽 스틱 Y = 높이, D-pad = gait clearance/penetration 실시간 조정, `button_switch_mode` = stepping↔pose 전환, `button_estop` = E-stop 토글, `button_imu_auto` = IMU balance 토글, 범퍼 두 개 = gait 조정값을 launch 기본값으로 리셋.
+**입력 매핑**(기본값, 전부 파라미터로 재설정 가능): 왼쪽 스틱 = 전진/횡이동(stepping) 또는 pitch/roll(pose), 오른쪽 스틱 X = yaw, 오른쪽 스틱 Y = 높이, D-pad = gait clearance/penetration 실시간 조정, `button_switch_mode` = stepping↔pose 전환, `button_estop` = E-stop 토글, `button_sit`(기본 2번 버튼) = view 모드에서 앉기↔기본 자세 토글, `button_imu_auto` = IMU balance 토글, 범퍼 두 개 = gait 조정값을 launch 기본값으로 리셋.
 
 view(pose) 모드의 오른쪽 스틱 Y 높이는 `body_height_min`(기본 0.00 m), `body_height_default`(기본 0.28 m), `body_height_max`(기본 0.50 m)의 절대 몸통 높이 범위로 매핑된다. 스틱 중립은 항상 기본 높이이며, 위/아래 방향은 각각 기본↔최대와 기본↔최소 사이를 선형 보간한다. `/body_pose`에는 nominal 자세 기준 Z 변위가 실리므로 `body_height_default`는 `quattro/config/kinematics.yaml`의 `nominal_height`와 같아야 한다. 높이는 `0 <= min <= default <= max`를 만족하지 않으면 노드 시작 시 거부된다.
+
+앉아 있는 동안에는 stepping 모드 전환을 거부한다. 먼저 2번 버튼을 다시 눌러 기본 자세로 복귀해야 한다.
 
 **안전 원칙**
 
