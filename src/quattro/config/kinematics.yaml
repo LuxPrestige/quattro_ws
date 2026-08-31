@@ -22,7 +22,7 @@ gait_controller:
     foot_spacing_x: 0.455          # 기본 자세에서 발의 전후(x) 간격 (m)
     foot_spacing_y: 0.301          # 기본 자세에서 발의 좌우(y) 간격 (m)
     nominal_height: 0.280          # 몸통 기준점에서 발까지의 기본 높이 (m)
-    center_of_mass_offset_x: 0.000 # IK 목표 좌표의 x축 보정값 (무게중심이 기하학적 중심에서 벗어난 만큼 보정, m)
+    center_of_mass_offset_x: 0.050 # IK 목표 좌표의 x축 보정값 (무게중심이 기하학적 중심에서 벗어난 만큼 보정, m)
 
     # --- 보행 타이밍 파라미터 ---
     swing_duration: 0.18           # 한 다리가 공중에 떠 있는 스윙 구간 시간 (s)
@@ -30,17 +30,22 @@ gait_controller:
     clearance_height: 0.030        # 스윙 궤적에서 발이 들어올려지는 최대 높이 (m)
     penetration_depth: 0.005         # 스탠스 구간 중 발이 nominal 높이보다 아래로 내려가는 최대 깊이, 접지 컴플라이언스를 흉내내는 값 (m)
 
+    # --- 걷는 동안의 고정 몸통 자세 보정 ---
+    walking_pitch_bias: 0.0523599        # 보행 중 몸통을 앞으로 기울이는 고정 pitch 값, 양수=전방 기울임 (rad)
+
     # --- 속도 명령 및 램프 제어 ---
     max_linear_speed: 0.3          # cmd_vel로 허용되는 최대 선속도, 초과 시 예외 발생 (m/s)
     max_yaw_rate: 1.0              # cmd_vel로 허용되는 최대 요(yaw) 각속도, 초과 시 예외 발생 (rad/s)
     stop_return_speed: 0.08        # 정지 후 발이 오프셋 위치에서 nominal stance로 복귀하는 속도 (m/s)
-    velocity_ramp_rate: 0.5        # cmd_vel 목표 속도가 변할 때 적용되는 가속 램프율 (m/s^2, rad/s^2)
-    stop_ramp_rate: 0.5            # cmd_vel 목표가 정지(0)로 바뀔 때 적용되는 감속 램프율 (m/s^2, rad/s^2)
+    velocity_ramp_rate: 1.5        # cmd_vel 목표 속도가 변할 때 적용되는 가속 램프율 (m/s^2, rad/s^2)
+    stop_ramp_rate: 1.5            # cmd_vel 목표가 정지(0)로 바뀔 때 적용되는 감속 램프율 (m/s^2, rad/s^2)
     command_timeout: 0.50          # 마지막 cmd_vel 수신 후 이 시간이 지나면 자동으로 속도를 0으로 정지 (s)
 
     # --- 제어 루프 및 시작 옵션 ---
     control_frequency: 100.0       # 제어 루프 주기 (Hz)
     start_enabled: true            # 노드 시작 즉시 gait 출력을 활성화할지 여부
+
+    
 
     # --- 자세(roll/pitch) 밸런싱 PID (IMU 기반, balance 기능 활성화 시 사용) ---
     pose_pid:

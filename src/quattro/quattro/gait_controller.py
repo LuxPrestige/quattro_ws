@@ -88,6 +88,11 @@ class GaitController(Node):
         self._pid_kd = float(self.declare_parameter('pose_pid.kd', 0.05).value)
         self._pid_limit = float(self.declare_parameter(
             'pose_pid.integral_limit', 0.5).value)
+        # Constant forward body lean (rad) applied only while stepping;
+        # positive pitches the body forward. Independent of /body_pose,
+        # which drives body_rpy in pose-control mode instead.
+        self._walking_pitch_bias = float(self.declare_parameter(
+            'walking_pitch_bias', 0.0).value)
         if (self._control_frequency <= 0.0 or self._command_timeout <= 0.0 or
                 self._velocity_ramp_rate <= 0.0 or
                 self._stop_ramp_rate <= 0.0 or
@@ -101,7 +106,9 @@ class GaitController(Node):
         self._gait = GaitGenerator(geometry, GaitParameters(**gait_values))
         self._command = Twist()
         self._smoothed_velocity = [0.0, 0.0, 0.0]
-        self._body_rpy = (0.0, 0.0, 0.0)
+        self._body_rpy = (
+            (0.0, self._walking_pitch_bias, 0.0) if start_enabled
+            else (0.0, 0.0, 0.0))
         self._body_translation = (0.0, 0.0, 0.0)
         self._imu_rpy = (0.0, 0.0, 0.0)
         self._imu_rates = (0.0, 0.0)
@@ -217,7 +224,7 @@ class GaitController(Node):
             self._initial_pose_pending = True
         self._smoothed_velocity = [0.0, 0.0, 0.0]
         if request.data:
-            self._body_rpy = (0.0, 0.0, 0.0)
+            self._body_rpy = (0.0, self._walking_pitch_bias, 0.0)
             self._body_translation = (0.0, 0.0, 0.0)
         response.success = True
         response.message = 'stepping' if request.data else 'viewing'
